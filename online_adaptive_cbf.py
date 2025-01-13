@@ -14,15 +14,19 @@ from DistributionallyRobustCVaR.distributionally_robust_cvar import Distribution
 from sklearn.preprocessing import MinMaxScaler
 
 class OnlineCBFAdapter:
-    def __init__(self, model_name, scaler_name, d_min=0.075, step_size=0.01, epistemic_threshold=0.2):
+    def __init__(self, model_name, scaler_name, d_min=0.075, step_size=0.05, epistemic_threshold=0.2, lower_bound=0.01, upper_bound=1.0, robot_model=None):
         '''
         Initialize the adaptive CBF parameter selector
         '''
-        self.penn = ProbabilisticEnsembleNN()
+        self.robot_model = robot_model
+        if self.robot_model == 'Quad2D':
+            self.extra_state = 1
+            
+        self.penn = ProbabilisticEnsembleNN(n_states=6+self.extra_state)
         self.penn.load_model(model_name)
         self.penn.load_scaler(scaler_name)
-        self.lower_bound = 0.01  # Lower bound for CBF parameter sampling, Conservative
-        self.upper_bound = 0.2   # Upper bound for CBF parameter sampling, Aggressive
+        self.lower_bound = lower_bound  # Lower bound for CBF parameter sampling, Conservative
+        self.upper_bound = upper_bound  # Upper bound for CBF parameter sampling, Aggressive
         self.d_min = d_min  # Closest allowable distance to obstacles
         self.step_size = step_size  # Step size for sampling caldidate CBF parameters
         self.epistemic_threshold = epistemic_threshold  # Threshold for filtering predictions based on epistemic uncertainty
@@ -31,8 +35,8 @@ class OnlineCBFAdapter:
         '''
         Sample CBF parameters (gamma0 and gamma1) within a specified range
         '''
-        gamma0_range = np.arange(max(self.lower_bound, current_gamma0 - 0.2), min(self.upper_bound, current_gamma0 + 0.2 + self.step_size), self.step_size)
-        gamma1_range = np.arange(max(self.lower_bound, current_gamma1 - 0.2), min(self.upper_bound, current_gamma1 + 0.2 + self.step_size), self.step_size)
+        gamma0_range = np.arange(max(self.lower_bound, current_gamma0 - 2.5), min(self.upper_bound, current_gamma0 + 2.5 + self.step_size), self.step_size)
+        gamma1_range = np.arange(max(self.lower_bound, current_gamma1 - 2.5), min(self.upper_bound, current_gamma1 + 2.5 + self.step_size), self.step_size)
         return gamma0_range, gamma1_range
 
     def get_rel_state_wt_obs(self, tracking_controller):
@@ -49,13 +53,18 @@ class OnlineCBFAdapter:
         
         # Calculate distance, velocity, and relative angle with the obstacle
         distance = np.linalg.norm(robot_pos - near_obs[:2]) - 0.45 + robot_radius + near_obs[2]
-        velocity = tracking_controller.robot.X[3, 0]
         delta_theta = np.arctan2(near_obs[1] - robot_pos[1], near_obs[0] - robot_pos[0]) - robot_theta
         delta_theta = ((delta_theta + np.pi) % (2 * np.pi)) - np.pi
         gamma0 = tracking_controller.pos_controller.cbf_param['alpha1']
         gamma1 = tracking_controller.pos_controller.cbf_param['alpha2']
         
-        return [distance, velocity, delta_theta, gamma0, gamma1]
+        if self.robot_model == 'Quad2D':
+            velocity_x = tracking_controller.robot.X[3, 0]
+            velocity_z = tracking_controller.robot.X[4, 0]
+            return [distance, velocity_x, velocity_z, delta_theta, gamma0, gamma1]
+        else:
+            velocity = tracking_controller.robot.X[3, 0]
+            return [distance, velocity, delta_theta, gamma0, gamma1]
 
     def predict_with_penn(self, current_state, gamma0_range, gamma1_range):
         '''
@@ -65,8 +74,8 @@ class OnlineCBFAdapter:
         for gamma0 in gamma0_range:
             for gamma1 in gamma1_range:
                 state = current_state.copy()
-                state[3] = gamma0
-                state[4] = gamma1
+                state[3+self.extra_state] = gamma0
+                state[4+self.extra_state] = gamma1
                 batch_input.append(state)
         
         batch_input = np.array(batch_input)
@@ -127,8 +136,8 @@ class OnlineCBFAdapter:
         if not final_predictions:
             current_gamma0 = tracking_controller.pos_controller.cbf_param['alpha1']
             current_gamma1 = tracking_controller.pos_controller.cbf_param['alpha2']
-            gamma0 = max(self.lower_bound, current_gamma0 - 0.02)
-            gamma1 = max(self.lower_bound, current_gamma1 - 0.02)
+            gamma0 = max(self.lower_bound, current_gamma0 - self.step_size)
+            gamma1 = max(self.lower_bound, current_gamma1 - self.step_size)
             return gamma0, gamma1
         min_deadlock_time = min(final_predictions, key=lambda x: x[3])[3]
         best_predictions = [pred for pred in final_predictions if pred[3][0] < 1e-3]
@@ -147,7 +156,7 @@ class OnlineCBFAdapter:
         which is both confident and satisfies the local validity condition
         '''
         current_state = self.get_rel_state_wt_obs(tracking_controller)
-        gamma0_range, gamma1_range = self.sample_cbf_parameters(current_state[3], current_state[4])
+        gamma0_range, gamma1_range = self.sample_cbf_parameters(current_state[3+self.extra_state], current_state[4+self.extra_state])
         predictions = self.predict_with_penn(current_state, gamma0_range, gamma1_range)
         filtered_predictions = self.filter_by_epistemic_uncertainty(predictions)
         final_predictions = self.filter_by_aleatoric_uncertainty(filtered_predictions)
@@ -160,52 +169,122 @@ class OnlineCBFAdapter:
         return best_gamma0, best_gamma1
 
 
-def single_agent_simulation(velocity, waypoints, known_obs, controller_name, max_sim_time=150):
+def single_agent_simulation(velocity, waypoints, known_obs, controller_name, robot_model, max_sim_time=20):
     '''
     Run a single agent trajectory simulation with different controllers
     '''
     dt = 0.05
     
     adapt_cbf = False
-    # Define controller type and initial CBF parameters based on the selected controller
-    if controller_name == 'MPC-CBF low fixed param':
-        controller = 'mpc_cbf'
-        gamma0 = 0.01
-        gamma1 = 0.01
-    elif controller_name == 'MPC-CBF high fixed param':
-        controller = 'mpc_cbf'
-        gamma0 = 0.2
-        gamma1 = 0.2
-    elif controller_name == 'Optimal Decay CBF-QP':
-        controller = 'optimal_decay_cbf_qp'
-        gamma0 = 0.5 
-        gamma1 = 0.5 
-    elif controller_name == 'Optimal Decay MPC-CBF':
-        controller = 'optimal_decay_mpc_cbf'
-        gamma0 = 0.01
-        gamma1 = 0.01   
-    elif controller_name == 'Online Adaptive CBF':
-        adapt_cbf = True
-        controller = 'mpc_cbf'
-        gamma0 = 0.01
-        gamma1 = 0.01
-        
+           
+    # Set robot with the specified controller
+    if robot_model == 'DynamicUnicycle2D':
+        x_init = np.append(waypoints[0], velocity)
+        robot_spec = {
+            'model': 'DynamicUnicycle2D',
+            'w_max': 0.5,
+            'a_max': 0.5,
+            'fov_angle': 70.0,
+            'cam_range': 3.0,
+            'radius': 0.3
+        }
+        # Define controller type and initial CBF parameters based on the selected controller
+        if controller_name == 'MPC-CBF low fixed param':
+            controller = 'mpc_cbf'
+            gamma0 = 0.01
+            gamma1 = 0.01
+        elif controller_name == 'MPC-CBF high fixed param':
+            controller = 'mpc_cbf'
+            gamma0 = 0.2
+            gamma1 = 0.2
+        elif controller_name == 'Optimal Decay CBF-QP':
+            controller = 'optimal_decay_cbf_qp'
+            gamma0 = 0.5 
+            gamma1 = 0.5 
+        elif controller_name == 'Optimal Decay MPC-CBF':
+            controller = 'optimal_decay_mpc_cbf'
+            gamma0 = 0.01
+            gamma1 = 0.01   
+        elif controller_name == 'Online Adaptive CBF':
+            adapt_cbf = True
+            controller = 'mpc_cbf'
+            gamma0 = 0.01
+            gamma1 = 0.01
+        if adapt_cbf:
+            online_cbf_adapter = OnlineCBFAdapter('nn_model/checkpoint/penn_model_1111.pth', 'nn_model/checkpoint/scaler_1111.save', step_size = 0.01, lower_bound=0.01, upper_bound=0.2)
+    elif robot_model == 'KinematicBicycle2D':
+        x_init = np.append(waypoints[0], velocity)
+        robot_spec = {
+            'model': 'KinematicBicycle2D',
+            'a_max': 0.5,
+            'fov_angle': 170.0,
+            'cam_range': 0.01,
+            'radius': 0.5
+        }
+        # Define controller type and initial CBF parameters based on the selected controller
+        if controller_name == 'MPC-CBF low fixed param':
+            controller = 'mpc_cbf'
+            gamma0 = 0.05
+            gamma1 = 0.05
+        elif controller_name == 'MPC-CBF high fixed param':
+            controller = 'mpc_cbf'
+            gamma0 = 3.0
+            gamma1 = 3.0
+        elif controller_name == 'Optimal Decay CBF-QP':
+            controller = 'optimal_decay_cbf_qp'
+            gamma0 = 0.5 
+            gamma1 = 0.5 
+        elif controller_name == 'Optimal Decay MPC-CBF':
+            controller = 'optimal_decay_mpc_cbf'
+            gamma0 = 0.1
+            gamma1 = 0.1   
+        elif controller_name == 'Online Adaptive CBF':
+            adapt_cbf = True
+            controller = 'mpc_cbf'
+            gamma0 = 0.01
+            gamma1 = 0.01
+        if adapt_cbf:
+            online_cbf_adapter = OnlineCBFAdapter('nn_model/checkpoint/penn_model_1204.pth', 'nn_model/checkpoint/scaler_1204.save', step_size = 0.05, lower_bound=0.01, upper_bound=3.0)
+    elif robot_model == 'Quad2D':
+        x_init = np.append(waypoints[0], [velocity[0], velocity[1], 0])
+        robot_spec = {
+            'model': 'Quad2D',
+            'f_min': 3.0,
+            'f_max': 10.0,
+            'sensor': 'rgbd',
+            'radius': 0.25
+        }
+        # Define controller type and initial CBF parameters based on the selected controller
+        if controller_name == 'MPC-CBF low fixed param':
+            controller = 'mpc_cbf'
+            gamma0 = 0.01
+            gamma1 = 0.01
+        elif controller_name == 'MPC-CBF high fixed param':
+            controller = 'mpc_cbf'
+            gamma0 = 1.1
+            gamma1 = 1.1
+        elif controller_name == 'Optimal Decay CBF-QP':
+            controller = 'optimal_decay_cbf_qp'
+            gamma0 = 0.5 
+            gamma1 = 0.5 
+        elif controller_name == 'Optimal Decay MPC-CBF':
+            controller = 'optimal_decay_mpc_cbf'
+            gamma0 = 0.01
+            gamma1 = 0.01   
+        elif controller_name == 'Online Adaptive CBF':
+            adapt_cbf = True
+            controller = 'mpc_cbf'
+            gamma0 = 0.01
+            gamma1 = 0.01
+        if adapt_cbf:
+            online_cbf_adapter = OnlineCBFAdapter('nn_model/checkpoint/penn_model_1.pth', 'nn_model/checkpoint/scaler_1.save', step_size = 0.05, lower_bound=0.01, upper_bound=1.1, robot_model=robot_model)
+
     # Set up the plotting and environment handlers
     plot_handler = plotting.Plotting(width=11.0, height=3.8, known_obs=known_obs)
-    x_init = np.append(waypoints[0], velocity)
 
     ax, fig = plot_handler.plot_grid(f"{controller_name} controller")
-    env_handler = env.Env()
-    
-    # Set robot with the specified controller
-    robot_spec = {
-        'model': 'DynamicUnicycle2D',
-        'w_max': 0.5,
-        'a_max': 0.5,
-        'fov_angle': 70.0,
-        'cam_range': 3.0,
-        'radius': 0.3
-    }
+    env_handler = env.Env()        
+        
     tracking_controller = LocalTrackingController(x_init, robot_spec,
                                                 control_type=controller,
                                                 dt=dt,
@@ -213,10 +292,6 @@ def single_agent_simulation(velocity, waypoints, known_obs, controller_name, max
                                                 save_animation=False,
                                                 ax=ax, fig=fig,
                                                 env=env_handler)
-
-    # Initialize OnlineCBFAdapter if adaptation is enabled
-    if adapt_cbf:
-        online_cbf_adapter = OnlineCBFAdapter('nn_model/checkpoint/penn_model_0921.pth', 'nn_model/checkpoint/scaler_0921.save')
 
     # Set initial gamma values for the CBF
     tracking_controller.pos_controller.cbf_param['alpha1'] = gamma0
@@ -252,17 +327,31 @@ def single_agent_simulation(velocity, waypoints, known_obs, controller_name, max
 if __name__ == "__main__":
     # List of controller strategies
     controller_list = ['MPC-CBF low fixed param', 'MPC-CBF high fixed param', 'Optimal Decay CBF-QP', 'Optimal Decay MPC-CBF', 'Online Adaptive CBF']
+    robot_model_list = ['DynamicUnicycle2D', 'KinematicBicycle2D', 'Quad2D']
     controller_name = controller_list[4]
+    robot_model = robot_model_list[0]
     
     # Define waypoints and obstacles for the simulation
     waypoints = np.array([
         [0.75, 2.0, 0.01],
         [10, 1.5, 0]
     ], dtype=np.float64)   
-    init_vel = 0.4
-    known_obs = np.array([[4.0, 0.3, 0.3], [3.5, 0.5, 0.4], [3.5, 2.4, 0.5],
-                          [6.5, 2.6, 1.05], [8.5, 0.4, 0.2],
-                          [8, 0.6, 0.35], [7.5, 2.3, 0.45],])
+    
+    if robot_model == 'DynamicUnicycle2D':
+        init_vel = 0.4
+        known_obs = np.array([[4.0, 0.3, 0.3], [3.5, 0.5, 0.4], [3.5, 2.4, 0.5],
+                            [6.5, 2.6, 1.05], [8.5, 0.4, 0.2],
+                            [8, 0.6, 0.35], [7.5, 2.3, 0.45],])
+    elif robot_model == 'KinematicBicycle2D':
+        init_vel = 0.4
+        known_obs = np.array([[4.0, 0.3, 0.25], [3.5, 0.5, 0.35], [3.5, 2.4, 0.45],
+                            [6.5, 2.6, 1.0], 
+                            [8.2, 1.25, 0.25], [7.5, 2.3, 0.4],])
+    elif robot_model == 'Quad2D':
+        init_vel = [0.4, 0.2]  # [velocity_x, velocity_z]
+        known_obs = np.array([[4.0, 0.1, 0.3], [3.5, 0.3, 0.4], [3.5, 3.0, 0.5],
+                            [6.5, 3.1, 1.05],
+                            [8.2, 2.5, 0.3], [7.5, 2.7, 0.45],])
     
     # Run the simulation
-    single_agent_simulation(init_vel, waypoints, known_obs=known_obs, controller_name=controller_name)
+    single_agent_simulation(init_vel, waypoints, known_obs=known_obs, controller_name=controller_name, robot_model=robot_model)
