@@ -249,7 +249,7 @@ def generate_data_for_model(robot_model, samples_per_dimension=5, num_processes=
                             ))
 
         columns = ["Distance", "Velocity", "Theta", "gamma0", "gamma1",
-                   "NoCollision", "SafetyLoss", "DeadlockTime", "SimulationTime"]
+                   "No Collision", "Safety Loss", "Deadlock Time", "Simulation Time"]
 
     elif robot_model == "Quad2D":
         # Quad2D => 6D parameter space
@@ -272,7 +272,7 @@ def generate_data_for_model(robot_model, samples_per_dimension=5, num_processes=
                                 ))
 
         columns = ["Distance", "VelocityX", "VelocityZ", "Theta", "gamma0", "gamma1",
-                   "NoCollision", "SafetyLoss", "DeadlockTime", "SimulationTime"]
+                   "No Collision", "Safety Loss", "Deadlock Time", "Simulation Time"]
 
     # Number of total points
     total_points = len(parameter_space)
@@ -293,8 +293,8 @@ def generate_data_for_model(robot_model, samples_per_dimension=5, num_processes=
         df_raw = pd.DataFrame(results,
                               columns=[
                                   "Distance", "VelX_Returned", "VelZ_Returned", "Theta",
-                                  "gamma0", "gamma1", "NoCollision", "SafetyLoss",
-                                  "DeadlockTime", "SimulationTime"
+                                  "gamma0", "gamma1", "No Collision", "Safety Loss",
+                                  "Deadlock Time", "Simulation Time"
                               ])
         # Transform df_raw to the final columns based on robot model
         if robot_model in ("DynamicUnicycle2D", "KinematicBicycle2D"):
@@ -305,10 +305,10 @@ def generate_data_for_model(robot_model, samples_per_dimension=5, num_processes=
             df_final["Theta"] = df_raw["Theta"]
             df_final["gamma0"] = df_raw["gamma0"]
             df_final["gamma1"] = df_raw["gamma1"]
-            df_final["NoCollision"] = df_raw["NoCollision"]
-            df_final["SafetyLoss"] = df_raw["SafetyLoss"]
-            df_final["DeadlockTime"] = df_raw["DeadlockTime"]
-            df_final["SimulationTime"] = df_raw["SimulationTime"]
+            df_final["No Collision"] = df_raw["No Collision"]
+            df_final["Safety Loss"] = df_raw["Safety Loss"]
+            df_final["Deadlock Time"] = df_raw["Deadlock Time"]
+            df_final["Simulation Time"] = df_raw["Simulation Time"]
         else:
             # Quad2D => rename columns to VelocityX, VelocityZ
             df_final = pd.DataFrame()
@@ -318,10 +318,10 @@ def generate_data_for_model(robot_model, samples_per_dimension=5, num_processes=
             df_final["Theta"] = df_raw["Theta"]
             df_final["gamma0"] = df_raw["gamma0"]
             df_final["gamma1"] = df_raw["gamma1"]
-            df_final["NoCollision"] = df_raw["NoCollision"]
-            df_final["SafetyLoss"] = df_raw["SafetyLoss"]
-            df_final["DeadlockTime"] = df_raw["DeadlockTime"]
-            df_final["SimulationTime"] = df_raw["SimulationTime"]
+            df_final["No Collision"] = df_raw["No Collision"]
+            df_final["Safety Loss"] = df_raw["Safety Loss"]
+            df_final["Deadlock Time"] = df_raw["Deadlock Time"]
+            df_final["Simulation Time"] = df_raw["Simulation Time"]
 
         df_final.to_csv(f"data_results_{robot_model}_batch_{batch_idx + 1}.csv", index=False)
 
@@ -351,7 +351,7 @@ if __name__ == "__main__":
     ]
     robot_model = robot_model_list[2]
 
-    samples_per_dimension = 3   # Number of samples per dimension
+    samples_per_dimension = 4   # Number of samples per dimension
     num_processes = 6           # Change based on the number of cores available
 
     if robot_model in ("DynamicUnicycle2D", "KinematicBicycle2D"):

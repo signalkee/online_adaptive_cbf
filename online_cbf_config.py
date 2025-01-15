@@ -132,9 +132,9 @@ ALL_DEFAULTS = {
             [4.0, 0.1, 0.3],
             [3.5, 0.3, 0.4],
             [3.5, 3.0, 0.5],
-            [6.5, 3.1, 1.05],
-            [8.2, 2.5, 0.3],
+            [6.5, 2.4, 1.05],
             [7.5, 2.7, 0.45],
+            [8.2, 1.2, 0.5],
         ])
     }
 }
@@ -142,22 +142,22 @@ ALL_DEFAULTS = {
 # Config for the online adapter (model file paths, step sizes, etc.)
 ADAPTIVE_MODELS = {
     "DynamicUnicycle2D": {
-        "model_path":  "nn_model/checkpoint/penn_model_1111.pth",
-        "scaler_path": "nn_model/checkpoint/scaler_1111.save",
+        "model_path":  "nn_model/checkpoint/penn_model_0921.pth",
+        "scaler_path": "nn_model/checkpoint/scaler_0921.save",
         "step_size":   0.01,
         "lower_bound": 0.01,
         "upper_bound": 0.2
     },
     "KinematicBicycle2D": {
-        "model_path":  "nn_model/checkpoint/penn_model_1204.pth",
-        "scaler_path": "nn_model/checkpoint/scaler_1204.save",
+        "model_path":  "nn_model/checkpoint/penn_model_1204_kinbi.pth",
+        "scaler_path": "nn_model/checkpoint/scaler_1204_kinbi.save",
         "step_size":   0.05,
         "lower_bound": 0.01,
         "upper_bound": 3.0
     },
     "Quad2D": {
-        "model_path":  "nn_model/checkpoint/penn_model_1.pth",
-        "scaler_path": "nn_model/checkpoint/scaler_1.save",
+        "model_path":  "nn_model/checkpoint/penn_model_0114_quad.pth",
+        "scaler_path": "nn_model/checkpoint/scaler_0114_quad.save",
         "step_size":   0.05,
         "lower_bound": 0.01,
         "upper_bound": 1.1
