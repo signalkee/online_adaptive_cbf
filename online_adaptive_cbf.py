@@ -5,31 +5,54 @@ project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(project_root, 'safe_control'))
 sys.path.append(os.path.join(project_root, 'DistributionallyRobustCVaR'))
 
+import copy
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
+from torch_geometric.data import Batch
 from sklearn.preprocessing import MinMaxScaler
 from safe_control.utils import plotting, env
 from safe_control.tracking import LocalTrackingController
+from nn_model.penn.gat import GATModule
 from nn_model.penn.nn_iccbf_predict import ProbabilisticEnsembleNN
+from nn_model.penn.nn_gat_iccbf_predict import ProbabilisticEnsembleGAT
 from DistributionallyRobustCVaR.distributionally_robust_cvar import DistributionallyRobustCVaR
 from online_cbf_config import ALL_DEFAULTS, ADAPTIVE_MODELS
 
 
+# TODO: compare cpu / cuda
+# TODO: 
+
 
 class OnlineCBFAdapter:
-    def __init__(self, model_name, scaler_name, d_min=0.075, step_size=0.05, epistemic_threshold=0.2, lower_bound=0.01, upper_bound=1.0, robot_model=None):
-        '''
+    def __init__(self, model_name, scaler_name=None, d_min=0.075, step_size=0.05,
+                 epistemic_threshold=0.2, lower_bound=0.01, upper_bound=1.0,
+                 robot_model=None, use_gat=False):
+        """
         Initialize the adaptive CBF parameter selector
-        '''
+        """
         self.robot_model = robot_model
-        if self.robot_model == 'Quad2D':
+        if self.robot_model == 'Quad2D': #TODO: make state dic
             self.extra_state = 1
         else:
             self.extra_state = 0
-            
-        self.penn = ProbabilisticEnsembleNN(n_states=6+self.extra_state)
+
+        self.use_gat = use_gat
+        if self.use_gat:
+            self.n_states = 18
+        else:
+            self.n_states = 6 + self.extra_state
+
+        self.gat_module = None
+        if self.use_gat:
+            self.gat_module = GATModule()
+            self.penn = ProbabilisticEnsembleGAT(self.gat_module)
+        else:
+            self.penn = ProbabilisticEnsembleNN(n_states=self.n_states)
+            if scaler_name:
+                self.penn.load_scaler(scaler_name)
+        
         self.penn.load_model(model_name)
-        self.penn.load_scaler(scaler_name)
         self.lower_bound = lower_bound  # Lower bound for CBF parameter sampling, Conservative
         self.upper_bound = upper_bound  # Upper bound for CBF parameter sampling, Aggressive
         self.d_min = d_min  # Closest allowable distance to obstacles
@@ -45,9 +68,9 @@ class OnlineCBFAdapter:
         return gamma0_range, gamma1_range
 
     def get_rel_state_wt_obs(self, tracking_controller):
-        '''
+        """
         Get the relative state of the robot with respect to the nearest obstacle
-        '''
+        """
         robot_pos = tracking_controller.robot.X[:2, 0].flatten()
         robot_theta = tracking_controller.robot.X[2, 0]
         robot_radius = tracking_controller.robot.robot_radius
@@ -68,12 +91,15 @@ class OnlineCBFAdapter:
             delta_theta = ((delta_theta + np.pi) % (2 * np.pi)) - np.pi  
         gamma0 = tracking_controller.pos_controller.cbf_param['alpha1']
         gamma1 = tracking_controller.pos_controller.cbf_param['alpha2']
-        
+
+        # If Quad2D => velocity_x, velocity_z
         if self.robot_model == 'Quad2D':
             velocity_x = tracking_controller.robot.X[3, 0]
             velocity_z = tracking_controller.robot.X[4, 0]
             return [distance, velocity_x, velocity_z, delta_theta, gamma0, gamma1]
         else:
+            # for vtol, also put x_vel only in this particular scenario (same setting for training)            
+            # 2D ground => velocity is single scalar
             # for vtol, also put x_vel only in this particular scenario (same setting for training)
             velocity = tracking_controller.robot.X[3, 0]
             return [distance, velocity, delta_theta, gamma0, gamma1]
@@ -96,8 +122,75 @@ class OnlineCBFAdapter:
 
         for i, (gamma0, gamma1) in enumerate(zip(gamma0_range.repeat(len(gamma1_range)), np.tile(gamma1_range, len(gamma0_range)))):
             predictions.append((gamma0, gamma1, y_pred_safety_loss[i], y_pred_deadlock_time[i][0], epistemic_uncertainty[i]))
+        return predictions
+    
+    def build_graph_from_env(self, tracking_controller):
+        """
+        Build a PyG graph from the current environment
+        """
+        rx, ry = tracking_controller.robot.X[0, 0], tracking_controller.robot.X[1, 0]
+        rtheta = tracking_controller.robot.X[2, 0]
+
+        # Convert heading+velocity to vx,vy if ground robot
+        if self.robot_model == 'Quad2D':
+            vx = tracking_controller.robot.X[3, 0]
+            vz = tracking_controller.robot.X[4, 0]
+            robot_state = [rx, ry, vx, vz]
+        else:
+            vel = tracking_controller.robot.X[3, 0]
+            vx = vel * np.cos(rtheta)
+            vy = vel * np.sin(rtheta)
+            robot_state = [rx, ry, vx, vy]
+
+        obstacles = tracking_controller.nearest_multi_obs
+        if isinstance(obstacles, np.ndarray):
+            if obstacles.size == 0:
+                obstacles = [[100., 100., 0.2]]
+        else:
+            if not obstacles:
+                obstacles = [[100., 100., 0.2]]
+
+        final_waypoint = tracking_controller.waypoints[-1]
+        goal = [final_waypoint[0], final_waypoint[1]]
+
+        # Build the graph using the GATModule
+        gdata = self.gat_module.create_graph(
+            robot=robot_state,
+            obstacles=obstacles,
+            goal=goal,
+            deadlock=0.0,  # placeholders
+            risk=0.0
+        )
+        return gdata
+    
+    def predict_with_gat_penn(self, tracking_controller, gamma0_range, gamma1_range):
+        """
+        Predict safety loss, deadlock time, and epistemic uncertainty 
+        using the Probabilistic Ensemble Neural Network
+        """
+        base_graph = self.build_graph_from_env(tracking_controller)
+        graph_list = []
+        for g0 in gamma0_range:
+            for g1 in gamma1_range:
+                # Make a copy of the base graph and attach gamma
+                g_copy = copy.deepcopy(base_graph)
+                g_copy.gamma = torch.tensor([[g0, g1]], dtype=torch.float32)
+                graph_list.append(g_copy)
+
+        y_pred_safety_list, y_pred_deadlock_list, div_list = self.penn.predict(graph_list)
+
+        predictions = []
+        idx = 0
+        for g0 in gamma0_range:
+            for g1 in gamma1_range:
+                safety_ensembles  = y_pred_safety_list[idx]   # List of [mu, var] per ensemble
+                deadlock_ensembles = y_pred_deadlock_list[idx]
+                epistemic_val     = div_list[idx]
+                predictions.append((g0, g1, safety_ensembles, deadlock_ensembles, epistemic_val))
+                idx += 1
 
         return predictions
+
 
     def filter_by_epistemic_uncertainty(self, predictions):
         '''
@@ -133,11 +226,16 @@ class OnlineCBFAdapter:
         cvar_boundary = self.calculate_cvar_boundary()
         for pred in filtered_predictions:
             _, _, y_pred_safety_loss, _, _ = pred
+            # print(y_pred_safety_loss)
+            # print(y_pred_safety_loss)
+            # print(y_pred_safety_loss)
+
             gmm = self.penn.create_gmm(y_pred_safety_loss)
             cvar_filter = DistributionallyRobustCVaR(gmm)
 
             if cvar_filter.is_within_boundary(cvar_boundary, alpha=0.99):
                 final_predictions.append(pred)
+        # print(final_predictions)
         return final_predictions
 
     def select_best_parameters(self, final_predictions, tracking_controller):
@@ -152,15 +250,25 @@ class OnlineCBFAdapter:
             gamma1 = max(self.lower_bound, current_gamma1 - self.step_size)
             return gamma0, gamma1
         min_deadlock_time = min(final_predictions, key=lambda x: x[3])[3]
-        best_predictions = [pred for pred in final_predictions if pred[3][0] < 1e-3]
+        # print(final_predictions)
+        # best_predictions = [pred for pred in final_predictions if pred[3][0] < 1e-3]
         # If no predictions under 1e-3, use the minimum deadlock time
-        if not best_predictions:
-            best_predictions = [pred for pred in final_predictions if pred[3] == min_deadlock_time]
-        # If there are multiple best predictions, use harmonic mean to select the best one
-        if len(best_predictions) != 1:
-            best_prediction = max(best_predictions, key=lambda x: 2 * (x[0] * x[1]) / (x[0] + x[1]) if (x[0] + x[1]) != 0 else 0)
-            return best_prediction[0], best_prediction[1]
-        return best_predictions[0][0], best_predictions[0][1]
+        # if not best_predictions:
+        #     best_predictions = [pred for pred in final_predictions if pred[3] == min_deadlock_time]
+        # # If there are multiple best predictions, use harmonic mean to select the best one
+        # if len(best_predictions) != 1:
+        #     best_prediction = max(best_predictions, key=lambda x: 2 * (x[0] * x[1]) / (x[0] + x[1]) if (x[0] + x[1]) != 0 else 0)
+        #     return best_prediction[0], best_prediction[1]
+        # return best_predictions[0][0], best_predictions[0][1]
+
+        # Pick the best prediction by harmonic mean of (gamma0, gamma1).
+        best_prediction = max(
+            final_predictions, 
+            key=lambda x: 2.0 * (x[0] * x[1]) / (x[0] + x[1]) if (x[0] + x[1]) != 0 else 0.0
+        )
+
+        return best_prediction[0], best_prediction[1]
+
 
     def cbf_param_adaptation(self, tracking_controller):
         '''
@@ -169,44 +277,52 @@ class OnlineCBFAdapter:
         '''
         current_state = self.get_rel_state_wt_obs(tracking_controller)
         gamma0_range, gamma1_range = self.sample_cbf_parameters(current_state[3+self.extra_state], current_state[4+self.extra_state])
-        predictions = self.predict_with_penn(current_state, gamma0_range, gamma1_range)
+        
+        if self.use_gat:
+            predictions = self.predict_with_gat_penn(tracking_controller, gamma0_range, gamma1_range)
+        else:
+            predictions = self.predict_with_penn(current_state, gamma0_range, gamma1_range)
+        
         filtered_predictions = self.filter_by_epistemic_uncertainty(predictions)
         final_predictions = self.filter_by_aleatoric_uncertainty(filtered_predictions)
         best_gamma0, best_gamma1 = self.select_best_parameters(final_predictions, tracking_controller)
+
         if best_gamma0 is not None and best_gamma1 is not None:
-            print(f"CBF parameters updated to: {best_gamma0:.2f}, {best_gamma1:.2f} | Total prediction count: {len(predictions)} | Filtered {len(predictions)-len(filtered_predictions)} with Epistemic | Filtered {len(filtered_predictions)-len(final_predictions)} with Aleatoric DR-CVaR")        
+            print(f"CBF parameters updated to: {best_gamma0:.2f}, {best_gamma1:.2f}"
+                  f" | Total predictions: {len(predictions)}"
+                  f" | Filtered {len(predictions)-len(filtered_predictions)} with Epistemic"
+                  f" | Filtered {len(filtered_predictions)-len(final_predictions)} with Aleatoric")
         else:
-            print(f"CBF parameters updated to: NONE, NONE | Total prediction count: {len(predictions)} | Filtered {len(predictions)-len(filtered_predictions)} with Epistemic | Filtered {len(filtered_predictions)-len(final_predictions)} with Aleatoric DR-CVaR")        
-            
+            print(f"CBF parameters updated to: NONE, NONE"
+                  f" | Total predictions: {len(predictions)}"
+                  f" | Filtered {len(predictions)-len(filtered_predictions)} with Epistemic"
+                  f" | Filtered {len(filtered_predictions)-len(final_predictions)} with Aleatoric")
+
         return best_gamma0, best_gamma1
 
 
 def get_robot_spec_and_obs(robot_model):
-    '''
+    """
     Returns (robot_spec, default_obs) for a given robot_model.
-    '''
+    """
     if robot_model not in ALL_DEFAULTS:
         raise ValueError(f"Unknown robot_model '{robot_model}'")
-
+    
     entry = ALL_DEFAULTS[robot_model]
     return entry["robot_spec"], entry["default_obs"]
 
 def get_controller_defaults(robot_model, controller_name):
-    '''
-    Returns (controller_type, gamma0, gamma1) for the given robot_model 
+    """
+    Returns (controller_type, gamma0, gamma1) for the given robot_model
     and high-level controller_name.
-    '''
-    
+    """
     if robot_model not in ALL_DEFAULTS:
         raise ValueError(f"Unknown robot_model '{robot_model}'")
-
+    
     controller_params = ALL_DEFAULTS[robot_model]["controller_params"].get(controller_name)
     if controller_params is None:
-        raise ValueError(
-            f"Unknown controller_name '{controller_name}' "
-            f"for robot_model '{robot_model}'"
-        )
-
+        raise ValueError(f"Unknown controller_name '{controller_name}' for robot_model '{robot_model}'")
+    
     return (
         controller_params["type"],
         controller_params["gamma0"],
@@ -228,14 +344,30 @@ def get_env_defaults(robot_model):
 
     return env_width, env_height
 
-def get_online_cbf_adapter(robot_model):
-    '''
-    Returns an OnlineCBFAdapter instance for the given robot_model.
-    '''
+def get_online_cbf_adapter(robot_model, controller_name):
+    """
+    Returns an OnlineCBFAdapter instance for the given robot_model
+    """
     if robot_model not in ADAPTIVE_MODELS:
         raise ValueError(f"No online adapter config found for '{robot_model}'")
 
-    cfg = ADAPTIVE_MODELS[robot_model]
+    controller_subkey_map = {
+        "Online Adaptive CBF-QP":  "online_cbf_qp",
+        "Online Adaptive MPC-CBF MLP": "online_mpc_cbf_mlp",
+        "Online Adaptive MPC-CBF GAT": "online_mpc_cbf_gat",
+    }
+    if controller_name == "Online Adaptive MPC-CBF GAT": 
+        use_gat=True
+    else:
+        use_gat=False
+    
+    if controller_name not in controller_subkey_map:
+        raise ValueError(f"Controller '{controller_name}' not recognized for online adaptation.")
+    subkey = controller_subkey_map[controller_name]
+    if subkey not in ADAPTIVE_MODELS[robot_model]:
+        raise ValueError(f"No config for subkey '{subkey}' in '{robot_model}'")
+
+    cfg = ADAPTIVE_MODELS[robot_model][subkey]
     return OnlineCBFAdapter(
         model_name=cfg["model_path"],
         scaler_name=cfg["scaler_path"],
@@ -243,9 +375,9 @@ def get_online_cbf_adapter(robot_model):
         lower_bound=cfg["lower_bound"],
         upper_bound=cfg["upper_bound"],
         epistemic_threshold=cfg.get("epistemic_threshold", 0.2),
-        robot_model=robot_model
+        robot_model=robot_model,
+        use_gat=use_gat
     )
-
 
 def single_agent_simulation(velocity,
                             waypoints,
@@ -254,10 +386,10 @@ def single_agent_simulation(velocity,
                             max_sim_time=30,
                             dt=0.05):
     """
-    Run a single-agent trajectory simulation using the specified 
+    Run a single-agent trajectory simulation using the specified
     robot_model, controller strategy, initial velocity, and waypoints.
     """
- 
+    
     # Get the robot spec & default obstacles & default controller type & gamma values
     robot_spec, default_obs = get_robot_spec_and_obs(robot_model)
     ctrl_type, gamma0, gamma1 = get_controller_defaults(robot_model, controller_name)
@@ -303,13 +435,13 @@ def single_agent_simulation(velocity,
     tracking_controller.pos_controller.cbf_param['alpha1'] = gamma0
     tracking_controller.pos_controller.cbf_param['alpha2'] = gamma1
 
-    # Load default obstacles & set waypoints
+    # Load obstacles & set waypoints
     tracking_controller.obs = default_obs
     tracking_controller.set_waypoints(waypoints)
 
-    # If controller is 'Online Adaptive CBF', get adapter
-    if controller_name == 'Online Adaptive CBF':
-        online_cbf_adapter = get_online_cbf_adapter(robot_model)
+    # If controller is 'Online Adaptive', get adapter
+    if controller_name in ['Online Adaptive CBF-QP', 'Online Adaptive MPC-CBF MLP', 'Online Adaptive MPC-CBF GAT']:
+        online_cbf_adapter = get_online_cbf_adapter(robot_model, controller_name)
     else:
         online_cbf_adapter = None
 
@@ -328,7 +460,6 @@ def single_agent_simulation(velocity,
 
         # Check if we've reached the goal or collided
         if ret == -1:
-            # Dist to final waypoint
             dist_to_goal = np.linalg.norm(tracking_controller.robot.X[:2, 0] - waypoints[-1][:2])
             if dist_to_goal < tracking_controller.reached_threshold:
                 print("Goal point reached.")
@@ -359,15 +490,15 @@ def single_agent_simulation(velocity,
     plt.close()
 
 
-
-
 if __name__ == "__main__":
     controller_list = [
         "MPC-CBF low fixed param",
         "MPC-CBF high fixed param",
         "Optimal Decay CBF-QP",
         "Optimal Decay MPC-CBF",
-        "Online Adaptive CBF"
+        "Online Adaptive CBF-QP",
+        "Online Adaptive MPC-CBF MLP",
+        "Online Adaptive MPC-CBF GAT",
     ]
     robot_model_list = [
         "DynamicUnicycle2D",
@@ -378,8 +509,8 @@ if __name__ == "__main__":
 
     # Pick a specific controller and robot model
     controller_name = controller_list[-1]   
-    robot_model = robot_model_list[3]       
-
+    robot_model = robot_model_list[0]       
+    
     # Define waypoints for the simulation
     if robot_model == "VTOL2D":
         waypoints = np.array([
@@ -402,3 +533,4 @@ if __name__ == "__main__":
 
     # Run the simulation
     single_agent_simulation(init_vel, waypoints, controller_name, robot_model)
+
