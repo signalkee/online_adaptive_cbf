@@ -58,11 +58,17 @@ class ProbabilisticEnsembleGAT(nn.Module):
 
         with torch.no_grad():
             for batch_data in loader:
-                x, edge_index, edge_attr, y, batch_idx = (
-                    batch_data.x, batch_data.edge_index, batch_data.edge_attr, batch_data.y, batch_data.batch
-                )
+                # x, edge_index, edge_attr, y, batch_idx = (
+                #     batch_data.x, batch_data.edge_index, batch_data.edge_attr, batch_data.y, batch_data.batch
+                # )
+                x          = batch_data.x.to(self.device)
+                edge_index = batch_data.edge_index.to(self.device)
+                edge_attr  = batch_data.edge_attr.to(self.device)
+                batch_idx  = batch_data.batch.to(self.device)          
                 # GAT embeddings
                 robot_emb = self.gat_model.gat.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
+                
+                
                 gamma = getattr(batch_data, 'gamma', None)
                 if gamma is None:
                     gamma = torch.zeros((robot_emb.shape[0], 2), dtype=torch.float, device=self.device)
@@ -126,14 +132,18 @@ class ProbabilisticEnsembleGAT(nn.Module):
         total_loss = 0.0
 
         for batch_data in train_loader:
-            x, edge_index, edge_attr, y, batch_idx = (
-                batch_data.x, batch_data.edge_index, batch_data.edge_attr, batch_data.y, batch_data.batch
-            )
+            # x, edge_index, edge_attr, y, batch_idx = (
+            #     batch_data.x, batch_data.edge_index, batch_data.edge_attr, batch_data.y, batch_data.batch
+            # )
+            x          = batch_data.x.to(self.device)
+            edge_index = batch_data.edge_index.to(self.device)
+            edge_attr  = batch_data.edge_attr.to(self.device)
+            batch_idx  = batch_data.batch.to(self.device)       
             y = y.squeeze(1) if y.dim() == 3 else y  # Ensure shape [batch_size, 2]
 
             # 1) Extract 16D embedding from GAT
             with torch.no_grad():
-                robot_emb = self.gat_model.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
+                robot_emb = self.gat_model.gat.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
 
             # Debugging: Check shape
             # print(f"robot_emb.shape: {robot_emb.shape}")  # Expected: [batch_size, 16]
@@ -172,9 +182,13 @@ class ProbabilisticEnsembleGAT(nn.Module):
 
         with torch.no_grad():
             for batch_data in test_loader:
-                x, edge_index, edge_attr, y, batch_idx = (
-                    batch_data.x, batch_data.edge_index, batch_data.edge_attr, batch_data.y, batch_data.batch
-                )
+                # x, edge_index, edge_attr, y, batch_idx = (
+                #     batch_data.x, batch_data.edge_index, batch_data.edge_attr, batch_data.y, batch_data.batch
+                # )
+                x          = batch_data.x.to(self.device)
+                edge_index = batch_data.edge_index.to(self.device)
+                edge_attr  = batch_data.edge_attr.to(self.device)
+                batch_idx  = batch_data.batch.to(self.device)       
                 y = y.squeeze(1) if y.dim() == 3 else y
 
                 # Extract GAT embeddings

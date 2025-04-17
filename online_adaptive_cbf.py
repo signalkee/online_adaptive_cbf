@@ -31,6 +31,7 @@ class OnlineCBFAdapter:
         """
         Initialize the adaptive CBF parameter selector
         """
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.robot_model = robot_model
         if self.robot_model == 'Quad2D': #TODO: make state dic
             self.extra_state = 1
@@ -45,13 +46,13 @@ class OnlineCBFAdapter:
 
         self.gat_module = None
         if self.use_gat:
-            self.gat_module = GATModule()
-            self.penn = ProbabilisticEnsembleGAT(self.gat_module)
+            self.gat_module = GATModule().to(self.device)
+            self.penn = ProbabilisticEnsembleGAT(self.gat_module, device=self.device)
         else:
-            self.penn = ProbabilisticEnsembleNN(n_states=self.n_states)
+            self.penn = ProbabilisticEnsembleNN(n_states=self.n_states, device=self.device)
             if scaler_name:
                 self.penn.load_scaler(scaler_name)
-        
+
         self.penn.load_model(model_name)
         self.lower_bound = lower_bound  # Lower bound for CBF parameter sampling, Conservative
         self.upper_bound = upper_bound  # Upper bound for CBF parameter sampling, Aggressive
@@ -173,8 +174,8 @@ class OnlineCBFAdapter:
         for g0 in gamma0_range:
             for g1 in gamma1_range:
                 # Make a copy of the base graph and attach gamma
-                g_copy = copy.deepcopy(base_graph)
-                g_copy.gamma = torch.tensor([[g0, g1]], dtype=torch.float32)
+                g_copy = copy.deepcopy(base_graph).to(self.device)
+                g_copy.gamma = torch.tensor([[g0, g1]], dtype=torch.float32, device=self.device)
                 graph_list.append(g_copy)
 
         y_pred_safety_list, y_pred_deadlock_list, div_list = self.penn.predict(graph_list)
