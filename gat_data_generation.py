@@ -162,7 +162,7 @@ def single_agent_simulation_gat(
             ex, ey, er = existing
             center_dist = np.hypot(ox - ex, oy - ey)
             min_clearance = er + radius + min_gap
-            if center_dist < min_clearance:
+            if center_dist < min_clearance*1.2:
                 valid = False
                 break
         if valid:
@@ -395,8 +395,8 @@ if __name__ == "__main__":
         generate_data_for_model_gat(
             robot_model=robot_model,
             controller_name=controller_name,
-            num_samples=1000,       
-            num_processes=5,        # Change based on the number of cores available
+            num_samples=100000,       
+            num_processes=25,        # Change based on the number of cores available
             obstacles_range=(2, 10),
             output_prefix="gat_datagen"
         )

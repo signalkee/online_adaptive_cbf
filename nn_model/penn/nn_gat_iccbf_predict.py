@@ -1,15 +1,11 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import os
 import math
 import numpy as np
 from torch.distributions.normal import Normal
-from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as GeoDataLoader
-from torch.nn.functional import mse_loss
 from sklearn.mixture import GaussianMixture
-import joblib
 
 
 class ProbabilisticEnsembleGAT(nn.Module):
@@ -64,7 +60,8 @@ class ProbabilisticEnsembleGAT(nn.Module):
                 x          = batch_data.x.to(self.device)
                 edge_index = batch_data.edge_index.to(self.device)
                 edge_attr  = batch_data.edge_attr.to(self.device)
-                batch_idx  = batch_data.batch.to(self.device)          
+                batch_idx  = batch_data.batch.to(self.device)    
+                y          = batch_data.y.to(self.device)          
                 # GAT embeddings
                 robot_emb = self.gat_model.gat.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
                 
@@ -139,11 +136,12 @@ class ProbabilisticEnsembleGAT(nn.Module):
             edge_index = batch_data.edge_index.to(self.device)
             edge_attr  = batch_data.edge_attr.to(self.device)
             batch_idx  = batch_data.batch.to(self.device)       
+            y          = batch_data.y.to(self.device)                
             y = y.squeeze(1) if y.dim() == 3 else y  # Ensure shape [batch_size, 2]
 
             # 1) Extract 16D embedding from GAT
             with torch.no_grad():
-                robot_emb = self.gat_model.gat.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
+                robot_emb = self.gat_model.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
 
             # Debugging: Check shape
             # print(f"robot_emb.shape: {robot_emb.shape}")  # Expected: [batch_size, 16]
@@ -188,7 +186,8 @@ class ProbabilisticEnsembleGAT(nn.Module):
                 x          = batch_data.x.to(self.device)
                 edge_index = batch_data.edge_index.to(self.device)
                 edge_attr  = batch_data.edge_attr.to(self.device)
-                batch_idx  = batch_data.batch.to(self.device)       
+                batch_idx  = batch_data.batch.to(self.device)   
+                y          = batch_data.y.to(self.device)    
                 y = y.squeeze(1) if y.dim() == 3 else y
 
                 # Extract GAT embeddings
