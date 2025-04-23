@@ -154,7 +154,7 @@ You can observe that the predicted risk level becomes higher as the CBF paramete
   <img src="https://github.com/user-attachments/assets/b6da3010-dcac-47a9-ad63-34a03df8e29a" height="200px">
 </p>
 
-Please refer to our repository [`DistributionallyRobustCVaR`](https://github.com/signalkee/DistributionallyRobustCVaR/tree/7405e05f7455f320b2c7b0ae72cef31a82d4a4f8) for more details.
+Please refer to our repository [`cvar-gmm-filter`](https://github.com/signalkee/cvar-gmm-filter/tree/7405e05f7455f320b2c7b0ae72cef31a82d4a4f8) for more details.
 
 ### Visualize Prediction Results for CBF Parameters of Interest
 

@@ -3,7 +3,7 @@ import sys
 
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(project_root, 'safe_control'))
-sys.path.append(os.path.join(project_root, 'DistributionallyRobustCVaR'))
+sys.path.append(os.path.join(project_root, 'cvar_gmm_filter'))
 
 import copy
 import torch
@@ -16,7 +16,7 @@ from safe_control.tracking import LocalTrackingController
 from nn_model.penn.gat import GATModule
 from nn_model.penn.nn_iccbf_predict import ProbabilisticEnsembleNN
 from nn_model.penn.nn_gat_iccbf_predict import ProbabilisticEnsembleGAT
-from DistributionallyRobustCVaR.distributionally_robust_cvar import DistributionallyRobustCVaR
+from cvar_gmm_filter.distributionally_robust_cvar import DistributionallyRobustCVaR
 from online_cbf_config import ALL_DEFAULTS, ADAPTIVE_MODELS
 
 
