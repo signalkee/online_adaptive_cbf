@@ -55,12 +55,12 @@ ROBOT_SPECS = {
             "f_min": 3.0,
             "f_max": 10.0,
             "sensor": "rgbd",
-            "radius": 0.25
+            "radius": 0.3
         },
         "param_ranges": {
             "theta_range":      (-np.pi/6, np.pi/6),
-            "gamma0_range":     (0.01, 1.0),
-            "gamma1_range":     (0.01, 1.0)
+            "gamma0_range":     (0.01, 0.35),
+            "gamma1_range":     (0.01, 0.35)
         }
     }
 }
@@ -381,7 +381,7 @@ if __name__ == "__main__":
         "Quad2D"
         ]
     controller_name = controller_list[1]
-    robot_model = robot_model_list[0]
+    robot_model = robot_model_list[2]
     
     TESTMODE = False
     

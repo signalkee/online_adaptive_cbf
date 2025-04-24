@@ -13,8 +13,8 @@ ALL_DEFAULTS = {
             },
             "MPC-CBF high fixed param": {
                 "type": "mpc_cbf",
-                "gamma0": 0.2,
-                "gamma1": 0.2
+                "gamma0": 0.35,
+                "gamma1": 0.35
             },
             "Optimal Decay CBF-QP": {
                 "type": "optimal_decay_cbf_qp",
@@ -125,8 +125,8 @@ ALL_DEFAULTS = {
             },
             "MPC-CBF high fixed param": {
                 "type": "mpc_cbf",
-                "gamma0": 1.1,
-                "gamma1": 1.1
+                "gamma0": 0.35,
+                "gamma1": 0.35
             },
             "Optimal Decay CBF-QP": {
                 "type": "optimal_decay_cbf_qp",
@@ -243,17 +243,17 @@ ADAPTIVE_MODELS = {
             "upper_bound": 0.15
         },
         "online_mpc_cbf_mlp": {
-            "model_path":  "nn_model/checkpoint/penn_model_0921.pth",
-            "scaler_path": "nn_model/checkpoint/scaler_0921.save",
+            "model_path":  "nn_model/checkpoint/penn_100000_DynamicUnicycle2D_model_0418_mlp.pth",
+            "scaler_path": "nn_model/checkpoint/penn_100000_DynamicUnicycle2D_model_0418_mlp.save",
             "step_size":   0.01,
-            "lower_bound": 0.01,
-            "upper_bound": 0.2
+            "lower_bound": 0.02,
+            "upper_bound": 0.35
         },      
         "online_mpc_cbf_gat": {
-            "model_path":  "nn_model/checkpoint/penn_model_0921.pth",
+            "model_path":  "nn_model/checkpoint/gat_datagen_DynamicUnicycle2D_0424_gat_norm.pth",
             "scaler_path": "nn_model/checkpoint/scaler_0921.save",
             "step_size":   0.01,
-            "lower_bound": 0.01,
+            "lower_bound": 0.02,
             "upper_bound": 0.35
         }      
     },

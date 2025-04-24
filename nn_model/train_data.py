@@ -2,31 +2,30 @@ import time
 import os
 import numpy as np
 import pandas as pd
-import torch
-from module import module  
 import random
 import math
-import matplotlib.pyplot as plt
 import joblib
-from sklearn.preprocessing import StandardScaler
-
-from torch.utils.data import DataLoader
-from penn.nn_iccbf_predict import ProbabilisticEnsembleNN  
-
 import pickle
+from module import module  
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+import torch
+from torch.utils.data import DataLoader
 from torch_geometric.loader import DataLoader as GeoDataLoader
 from torch_geometric.data import Batch
 from torch_geometric.data import Data
 from penn.gat import GATModule
+from penn.nn_iccbf_predict import ProbabilisticEnsembleNN  
 from penn.nn_gat_iccbf_predict import ProbabilisticEnsembleGAT  
 
 
 # Name or model and saving path
-DATANAME = 'gat_datagen_10000_DynamicUnicycle2D_mpc_cbf'
-MODELNAME_SAVE = 'penn_model_0409_test'
+DATANAME = 'gat_datagen_100000_DynamicUnicycle2D_mpc_cbf'
+MODELNAME_SAVE = 'gat_datagen_DynamicUnicycle2D_0424_gat_norm'
+SCALERNAME_SAVE = 'gat_datagen_DynamicUnicycle2D_0424_test_scaler'
 data_file = 'data/' + DATANAME + '.csv'
 pickle_file = 'data/' + DATANAME + '.pkl'
-scaler_path = 'checkpoint/scaler_0409_test.save'
+scaler_path = 'checkpoint/' + SCALERNAME_SAVE + '.save'
 model_path = 'checkpoint/' + MODELNAME_SAVE + '.pth'
 
 robot_model_list = ['DynamicUnicycle2D', 'KinematicBicycle2D', 'Quad2D', 'VTOL2D']
@@ -46,7 +45,7 @@ print(f"Using device: {device}")
 ACTIVATION = 'relu'
 LR = 0.0001
 BATCHSIZE = 32
-EPOCH = 10000
+EPOCH = 1000
 
 TEST_ONLY = False      # If True, just do inference; if False, train then test
 USE_GAT_EMBED = True   # False => MLP-only PENN, True => GAT+PENN
@@ -54,7 +53,7 @@ USE_GAT_EMBED = True   # False => MLP-only PENN, True => GAT+PENN
 WANDB_FLAG = True
 if WANDB_FLAG:
     import wandb
-    wandb.init(project="penn_compare_0409_10000", config={
+    wandb.init(project="penn_train_0422_test", config={
         "learning_rate": LR,
         "epochs": EPOCH,
         "batch_size": BATCHSIZE

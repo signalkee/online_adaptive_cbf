@@ -1,6 +1,5 @@
 import os
 import sys
-
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(project_root, 'safe_control'))
 sys.path.append(os.path.join(project_root, 'cvar_gmm_filter'))
@@ -19,19 +18,15 @@ from nn_model.penn.nn_gat_iccbf_predict import ProbabilisticEnsembleGAT
 from cvar_gmm_filter.distributionally_robust_cvar import DistributionallyRobustCVaR
 from online_cbf_config import ALL_DEFAULTS, ADAPTIVE_MODELS
 
-
-# TODO: compare cpu / cuda
-# TODO: 
-
-
 class OnlineCBFAdapter:
     def __init__(self, model_name, scaler_name=None, d_min=0.075, step_size=0.05,
-                 epistemic_threshold=0.2, lower_bound=0.01, upper_bound=1.0,
+                 epistemic_threshold=0.3, lower_bound=0.01, upper_bound=1.0,
                  robot_model=None, use_gat=False):
         """
         Initialize the adaptive CBF parameter selector
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Using device {self.device} for OnlineCBFAdapter")
         self.robot_model = robot_model
         if self.robot_model == 'Quad2D': #TODO: make state dic
             self.extra_state = 1
@@ -123,6 +118,7 @@ class OnlineCBFAdapter:
 
         for i, (gamma0, gamma1) in enumerate(zip(gamma0_range.repeat(len(gamma1_range)), np.tile(gamma1_range, len(gamma0_range)))):
             predictions.append((gamma0, gamma1, y_pred_safety_loss[i], y_pred_deadlock_time[i][0], epistemic_uncertainty[i]))
+            # print(f"Predictions: {gamma0:.2f}, {gamma1:.2f} | Safety Loss: {y_pred_safety_loss[i]} | Deadlock Time: {y_pred_deadlock_time[i][0]} | Epistemic: {epistemic_uncertainty[i]}")
         return predictions
     
     def build_graph_from_env(self, tracking_controller):
@@ -188,10 +184,10 @@ class OnlineCBFAdapter:
                 deadlock_ensembles = y_pred_deadlock_list[idx]
                 epistemic_val     = div_list[idx]
                 predictions.append((g0, g1, safety_ensembles, deadlock_ensembles, epistemic_val))
+                # print(f"Predictions: {g0:.2f}, {g1:.2f} | Safety Loss: {safety_ensembles} | Deadlock Time: {deadlock_ensembles} | Epistemic: {epistemic_val}")
                 idx += 1
 
         return predictions
-
 
     def filter_by_epistemic_uncertainty(self, predictions):
         '''
@@ -200,7 +196,7 @@ class OnlineCBFAdapter:
         If the JRD D(X) of the prediction of a given input X is greater than the predefined threshold, it is deemed to be out-of-distribution
         '''
         epistemic_uncertainties = [pred[4] for pred in predictions]
-        if all(pred > 1.0 for pred in epistemic_uncertainties):
+        if all(pred > 5.0 for pred in epistemic_uncertainties):
             filtered_predictions = []  # If all uncertainties are high, return an empty list
         else:
             scaler = MinMaxScaler()
@@ -228,9 +224,6 @@ class OnlineCBFAdapter:
         for pred in filtered_predictions:
             _, _, y_pred_safety_loss, _, _ = pred
             # print(y_pred_safety_loss)
-            # print(y_pred_safety_loss)
-            # print(y_pred_safety_loss)
-
             gmm = self.penn.create_gmm(y_pred_safety_loss)
             cvar_filter = DistributionallyRobustCVaR(gmm)
 
@@ -250,7 +243,8 @@ class OnlineCBFAdapter:
             gamma0 = max(self.lower_bound, current_gamma0 - self.step_size)
             gamma1 = max(self.lower_bound, current_gamma1 - self.step_size)
             return gamma0, gamma1
-        min_deadlock_time = min(final_predictions, key=lambda x: x[3])[3]
+        
+        # min_deadlock_time = min(final_predictions, key=lambda x: x[3])[3]
         # print(final_predictions)
         # best_predictions = [pred for pred in final_predictions if pred[3][0] < 1e-3]
         # If no predictions under 1e-3, use the minimum deadlock time
@@ -269,7 +263,6 @@ class OnlineCBFAdapter:
         )
 
         return best_prediction[0], best_prediction[1]
-
 
     def cbf_param_adaptation(self, tracking_controller):
         '''
@@ -425,8 +418,8 @@ def single_agent_simulation(velocity,
         robot_spec,
         control_type=ctrl_type,
         dt=dt,
-        show_animation=True,
-        save_animation=True,
+        show_animation=False,
+        save_animation=False,
         ax=ax,
         fig=fig,
         env=env_handler
@@ -451,7 +444,6 @@ def single_agent_simulation(velocity,
     with open('output.csv', 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(['states', 'control_inputs', 'alpha1', 'alpha2'])
-
 
     # Main simulation loop
     n_steps = int(max_sim_time / dt)

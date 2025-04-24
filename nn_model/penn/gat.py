@@ -202,7 +202,8 @@ class GATModule(nn.Module):
 
         # 2) Positions
         robot_pos = torch.tensor(robot[:2], dtype=torch.float).unsqueeze(0)
-        obs_pos   = torch.tensor([obs[:2] for obs in obstacles], dtype=torch.float) if num_obstacles>0 else torch.empty(0,2)
+        # obs_pos   = torch.tensor([obs[:2] for obs in obstacles], dtype=torch.float) if num_obstacles>0 else torch.empty(0,2)
+        obs_pos = torch.from_numpy(np.array([obs[:2] for obs in obstacles], dtype=np.float32)) if num_obstacles > 0 else torch.empty(0, 2)
         goal_pos  = torch.tensor(goal, dtype=torch.float).unsqueeze(0)
         all_positions = torch.cat([robot_pos, obs_pos, goal_pos], dim=0)
 

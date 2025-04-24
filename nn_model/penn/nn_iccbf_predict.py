@@ -106,8 +106,11 @@ class ProbabilisticEnsembleNN(nn.Module):
             means.append(mu)  
             variances.append(sigma_sq) 
 
-        means = np.array(means).reshape(-1, 1)  
-        variances = np.array(variances).reshape(-1, 1, 1)
+        # means = np.array(means).reshape(-1, 1)  
+        # variances = np.array(variances).reshape(-1, 1, 1)
+        means = np.array([m.cpu().numpy() if torch.is_tensor(m) else m for m in means]).reshape(-1, 1)
+        variances = np.array([v.cpu().numpy() if torch.is_tensor(v) else v for v in variances]).reshape(-1, 1, 1)
+
 
         gmm = GaussianMixture(n_components=num_components)
         gmm.means_ = means
