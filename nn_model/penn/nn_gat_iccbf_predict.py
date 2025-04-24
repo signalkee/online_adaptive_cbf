@@ -17,9 +17,14 @@ class ProbabilisticEnsembleGAT(nn.Module):
         self.n_output = n_output
         
         self.gat_model = gat_model  
-        self.gat_model.eval()       
+        # self.gat_model.eval()       
         self.gat_model = self.gat_model.to(self.device)
-
+        # self.projector = nn.Sequential(
+        #     nn.LayerNorm(16),
+        #     nn.Linear(16, 16),
+        #     nn.ReLU()
+        # ).to(self.device)
+        
         try:
             from penn.penn import EnsembleStochasticLinear
         except:
@@ -38,7 +43,12 @@ class ProbabilisticEnsembleGAT(nn.Module):
             self.model = nn.DataParallel(self.model)
             torch.backends.cudnn.benchmark = True
 
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = torch.optim.Adam(list(self.model.parameters()) + list(self.gat_model.parameters()), lr=lr)
+        # self.optimizer = torch.optim.Adam(
+        #     list(self.model.parameters()) + list(self.gat_model.parameters()) + list(self.projector.parameters()),
+        #     lr=lr
+        # )
         self.criterion = self.gaussian_nll_loss  # Custom Gaussian NLL Loss
         self.mse_loss = nn.MSELoss()
         self.best_test_err = 10000.0
@@ -54,24 +64,17 @@ class ProbabilisticEnsembleGAT(nn.Module):
 
         with torch.no_grad():
             for batch_data in loader:
-                # x, edge_index, edge_attr, y, batch_idx = (
-                #     batch_data.x, batch_data.edge_index, batch_data.edge_attr, batch_data.y, batch_data.batch
-                # )
                 x          = batch_data.x.to(self.device)
                 edge_index = batch_data.edge_index.to(self.device)
                 edge_attr  = batch_data.edge_attr.to(self.device)
                 batch_idx  = batch_data.batch.to(self.device)    
-                y          = batch_data.y.to(self.device)          
-                # GAT embeddings
-                robot_emb = self.gat_model.gat.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
-                
+                # y          = batch_data.y.to(self.device)                          
                 
                 gamma = getattr(batch_data, 'gamma', None)
-                if gamma is None:
-                    gamma = torch.zeros((robot_emb.shape[0], 2), dtype=torch.float, device=self.device)
-                else:
-                    gamma = gamma.view(-1, 2).to(self.device)
+                gamma = gamma.view(-1, 2).to(self.device)
 
+                robot_emb = self.gat_model.gat.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
+                # robot_emb = self.projector(robot_emb)
                 X_input = torch.cat([robot_emb, gamma], dim=1).to(self.device)
                 
                 # Each ensemble_out[en_idx] => (mu, log_std)
@@ -84,8 +87,8 @@ class ProbabilisticEnsembleGAT(nn.Module):
                 y_deadlock_ensembles = []
                 for (mu, log_std) in ensemble_out[:-1]:
                     sigma_sq = torch.square(torch.exp(log_std))
-                    y_safety_ensembles.append([mu[0,0].item(), sigma_sq[0,0].item()])
-                    y_deadlock_ensembles.append([mu[0,1].item(), sigma_sq[0,1].item()])
+                    y_deadlock_ensembles.append([mu[0,0].item(), sigma_sq[0,0].item()])
+                    y_safety_ensembles.append([mu[0,1].item(), sigma_sq[0,1].item()])
                 divergence = ensemble_out[-1][0,0].item()
                 div_list.append(divergence)
 
@@ -107,8 +110,10 @@ class ProbabilisticEnsembleGAT(nn.Module):
             means.append(mu)  
             variances.append(sigma_sq) 
 
-        means = np.array(means).reshape(-1, 1)  
-        variances = np.array(variances).reshape(-1, 1, 1)
+        # means = np.array(means).reshape(-1, 1)  
+        # variances = np.array(variances).reshape(-1, 1, 1)
+        means = np.array([m.cpu().numpy() if torch.is_tensor(m) else m for m in means]).reshape(-1, 1)
+        variances = np.array([v.cpu().numpy() if torch.is_tensor(v) else v for v in variances]).reshape(-1, 1, 1)
 
         gmm = GaussianMixture(n_components=num_components)
         gmm.means_ = means
@@ -124,14 +129,11 @@ class ProbabilisticEnsembleGAT(nn.Module):
     
     def train(self, train_loader, epoch):
         self.model.train()
-        self.gat_model.eval()  
+        self.gat_model.train()  
 
         total_loss = 0.0
 
         for batch_data in train_loader:
-            # x, edge_index, edge_attr, y, batch_idx = (
-            #     batch_data.x, batch_data.edge_index, batch_data.edge_attr, batch_data.y, batch_data.batch
-            # )
             x          = batch_data.x.to(self.device)
             edge_index = batch_data.edge_index.to(self.device)
             edge_attr  = batch_data.edge_attr.to(self.device)
@@ -139,31 +141,23 @@ class ProbabilisticEnsembleGAT(nn.Module):
             y          = batch_data.y.to(self.device)                
             y = y.squeeze(1) if y.dim() == 3 else y  # Ensure shape [batch_size, 2]
 
-            # 1) Extract 16D embedding from GAT
-            with torch.no_grad():
-                robot_emb = self.gat_model.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
-
-            # Debugging: Check shape
-            # print(f"robot_emb.shape: {robot_emb.shape}")  # Expected: [batch_size, 16]
-
-            # 2) Obtain gamma 2D
+            # Obtain gamma 2D
             gamma = getattr(batch_data, 'gamma', None)
             gamma = gamma.view(-1, 2).to(self.device)
 
-            # 3) Concatenate => shape [batch_size, 18]
-            X_input = torch.cat([robot_emb, gamma], dim=1).to(self.device)
-            y_target = y.to(self.device)
-
-            # Debugging: Check final input shape
-            # print(f"Final X_input shape: {X_input.shape}")  # Expected: torch.Size([batchsize, 18])
-
-            # 4) Train each ensemble member
+            # Train each ensemble member
             for model_idx in range(self.n_ensemble):
+                robot_emb = self.gat_model.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
+                # robot_emb = self.projector(robot_emb)
+                X_input = torch.cat([robot_emb, gamma], dim=1).to(self.device)
+                y_target = y.to(self.device)
+                
                 self.optimizer.zero_grad(set_to_none=True)
                 mu, log_std = self.model.single_forward(X_input, model_idx)
                 var = torch.square(torch.exp(log_std))
                 loss = self.criterion(mu, y_target, var).mean()
                 loss.backward()
+                # loss.backward(retain_graph=True)
                 self.optimizer.step()
                 total_loss += loss.item()
 
@@ -180,9 +174,6 @@ class ProbabilisticEnsembleGAT(nn.Module):
 
         with torch.no_grad():
             for batch_data in test_loader:
-                # x, edge_index, edge_attr, y, batch_idx = (
-                #     batch_data.x, batch_data.edge_index, batch_data.edge_attr, batch_data.y, batch_data.batch
-                # )
                 x          = batch_data.x.to(self.device)
                 edge_index = batch_data.edge_index.to(self.device)
                 edge_attr  = batch_data.edge_attr.to(self.device)
@@ -190,11 +181,11 @@ class ProbabilisticEnsembleGAT(nn.Module):
                 y          = batch_data.y.to(self.device)    
                 y = y.squeeze(1) if y.dim() == 3 else y
 
-                # Extract GAT embeddings
                 robot_emb = self.gat_model.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
+                # robot_emb = self.projector(robot_emb)
                 gamma = getattr(batch_data, 'gamma', None)
                 gamma = gamma.view(-1, 2).to(self.device)
-
+                
                 X_input = torch.cat([robot_emb, gamma], dim=1).to(self.device)
                 y_target = y.to(self.device)
 
@@ -208,7 +199,6 @@ class ProbabilisticEnsembleGAT(nn.Module):
                     var = torch.square(torch.exp(log_std))
                     loss_ = self.criterion(mu, y_target, var).mean()
                     en_loss += loss_
-
                     dist = Normal(mu, torch.exp(log_std))
                     dist_samp = dist.rsample()  # One sample from each Gaussian
                     en_mse += self.mse_loss(dist_samp, y_target)
