@@ -428,7 +428,7 @@ def single_agent_simulation(velocity,
     tracking_controller = LocalTrackingController(
         x_init,
         robot_spec,
-        control_type=ctrl_type,
+        controller_type={'pos': ctrl_type},
         dt=dt,
         show_animation=False,
         save_animation=False,
