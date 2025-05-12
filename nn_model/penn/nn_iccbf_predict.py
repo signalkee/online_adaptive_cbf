@@ -43,86 +43,51 @@ class ProbabilisticEnsembleNN(nn.Module):
         self.best_test_err = 10000.0
 
     def predict(self, input_array):
-        # Ensure input is a NumPy array
-        input_array = np.array(input_array)
-
-        # If input is 1D, reshape it to 2D
-        if input_array.ndim == 1:
-            input_array = input_array[np.newaxis, :]
-
-        # Transform Theta into sine and cosine components
+        input_array = np.atleast_2d(input_array)  # Ensures 2D input
         theta = input_array[:, 2]
         input_transformed = np.column_stack((input_array[:, :2], np.sin(theta), np.cos(theta), input_array[:, 3:]))
-
-        # Normalize the inputs using the loaded scaler
         input_scaled = self.scaler.transform(input_transformed)
-
-        # Convert the input to a PyTorch tensor and move it to the device
         input_tensor = torch.tensor(input_scaled, dtype=torch.float32).to(self.device)
 
-        # Predict the output using the trained model
         self.model.eval()
         with torch.no_grad():
-            ensemble_outputs = self.model(input_tensor)
+            ensemble_outputs = self.model(input_tensor)  # list of (mu, log_std) per ensemble + div
 
-        y_pred_safety_loss = []
-        y_pred_deadlock_time = []
-        div_list = []
+        # Ensemble outputs: list of (mu[B,2], log_std[B,2])
+        mu_stack     = torch.stack([e[0] for e in ensemble_outputs[:-1]], dim=0)  # (E, B, 2)
+        logstd_stack = torch.stack([e[1] for e in ensemble_outputs[:-1]], dim=0)  # (E, B, 2)
+        sigma_sq     = torch.square(torch.exp(logstd_stack))  # (E, B, 2)
 
-        # Extract mean, variance, and divergence for each input in the batch
-        for i in range(input_tensor.shape[0]):
-            safety_loss_ensembles = []
-            deadlock_time_ensembles = []
+        # Transpose to shape (B, E, 2)
+        mu_np = mu_stack.permute(1, 0, 2).cpu().numpy()       # (B, E, 2)
+        sigma_np = sigma_sq.permute(1, 0, 2).cpu().numpy()    # (B, E, 2)
 
-            # Loop through each ensemble prediction
-            for ensemble_idx in range(self.n_ensemble):
-                mu, log_std = ensemble_outputs[ensemble_idx]
-                yhat_mu = mu[i].cpu().numpy()
-                yhat_sig = torch.square(torch.exp(log_std[i]))
+        # Split predictions
+        y_pred_safety_loss = [[list(mv) for mv in zip(m[:, 0], s[:, 0])] for m, s in zip(mu_np, sigma_np)]
+        y_pred_deadlock_time = [[list(mv) for mv in zip(m[:, 1], s[:, 1])] for m, s in zip(mu_np, sigma_np)]
 
-                # Collect safety loss and deadlock time predictions
-                safety_loss_ensembles.append([yhat_mu[0], yhat_sig[0]])
-                deadlock_time_ensembles.append([yhat_mu[1], yhat_sig[1]])
+        div = ensemble_outputs[-1][:, 0].cpu().numpy().tolist()
 
-            y_pred_safety_loss.append(safety_loss_ensembles)
-            y_pred_deadlock_time.append(deadlock_time_ensembles)
-
-            # Extract divergence value for each input
-            div = ensemble_outputs[-1][i].cpu().numpy()[0] 
-            div_list.append(div)
-
-        return y_pred_safety_loss, y_pred_deadlock_time, div_list
-
+        return y_pred_safety_loss, y_pred_deadlock_time, div
+    
     def create_gmm(self, predictions, num_components=3):
         num_components = self.n_ensemble
-        means = []
-        variances = []
+        mu_list, var_list = [], []
+
         for i in range(num_components):
-            try:
-                mu, sigma_sq = predictions[i]  
-            except:
-                mu, sigma_sq = predictions[0][i]  
-                
-            means.append(mu)  
-            variances.append(sigma_sq) 
+            mu, sigma_sq = predictions[i] if i < len(predictions) else predictions[0][i]
+            mu_list.append(float(mu))
+            var_list.append(float(sigma_sq))
 
-        # means = np.array(means).reshape(-1, 1)  
-        # variances = np.array(variances).reshape(-1, 1, 1)
-        means = np.array([m.cpu().numpy() if torch.is_tensor(m) else m for m in means]).reshape(-1, 1)
-        variances = np.array([v.cpu().numpy() if torch.is_tensor(v) else v for v in variances]).reshape(-1, 1, 1)
+        means_arr = np.array(mu_list, dtype=np.float64).reshape(-1, 1)           # (E,1)
+        covs_arr  = np.array(var_list, dtype=np.float64).reshape(-1, 1, 1)       # (E,1,1)
 
-
-        gmm = GaussianMixture(n_components=num_components)
-        gmm.means_ = means
-        gmm.covariances_ = variances
-        gmm.weights_ = np.ones(num_components) / num_components  
-
-        try:
-            gmm.precisions_cholesky_ = np.array([np.linalg.cholesky(np.linalg.inv(cov)) for cov in gmm.covariances_])
-        except np.linalg.LinAlgError:
+        class _SimpleGMM:
             pass
-    
-        return gmm
+        gmm = _SimpleGMM()               # lightweight placeholder
+        gmm.means_        = means_arr
+        gmm.covariances_  = covs_arr     # diag cov
+        return gmm    
     
     def train(self, train_loader, epoch):
         # train a single epoch

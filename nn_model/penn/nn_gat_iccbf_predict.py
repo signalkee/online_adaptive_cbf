@@ -54,77 +54,63 @@ class ProbabilisticEnsembleGAT(nn.Module):
         self.best_test_err = 10000.0
 
     def predict(self, data_list):
-        loader = GeoDataLoader(data_list, batch_size=1, shuffle=False)
+        loader = GeoDataLoader(data_list, batch_size=len(data_list), shuffle=False)
         self.model.eval()
         self.gat_model.eval()
 
-        y_pred_safety_list = []
-        y_pred_deadlock_list = []
-        div_list = []
-
         with torch.no_grad():
-            for batch_data in loader:
-                x          = batch_data.x.to(self.device)
-                edge_index = batch_data.edge_index.to(self.device)
-                edge_attr  = batch_data.edge_attr.to(self.device)
-                batch_idx  = batch_data.batch.to(self.device)    
-                # y          = batch_data.y.to(self.device)                          
-                
-                gamma = getattr(batch_data, 'gamma', None)
-                gamma = gamma.view(-1, 2).to(self.device)
+            batch_data = next(iter(loader))  
+            x = batch_data.x.to(self.device)
+            edge_index = batch_data.edge_index.to(self.device)
+            edge_attr = batch_data.edge_attr.to(self.device)
+            batch_idx = batch_data.batch.to(self.device)
+            gamma = getattr(batch_data, 'gamma', None).view(-1, 2).to(self.device)
+            robot_emb = self.gat_model.gat.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
+            
+            # robot_emb: (1, emb_dim) → concat with gamma
+            if robot_emb.shape[0] == 1 and gamma.shape[0] > 1:
+                robot_emb = robot_emb.repeat(gamma.shape[0], 1)
 
-                robot_emb = self.gat_model.gat.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
-                # robot_emb = self.projector(robot_emb)
-                X_input = torch.cat([robot_emb, gamma], dim=1).to(self.device)
-                
-                # Each ensemble_out[en_idx] => (mu, log_std)
-                #   ensemble_out => list of n_ensemble + 1 outputs
-                #   each ensemble[i] => (mu, log_std)
-                #   ensemble_out[-1] => divergence
-                ensemble_out = self.model(X_input)
-                
-                y_safety_ensembles = []
-                y_deadlock_ensembles = []
+            X_input = torch.cat([robot_emb, gamma], dim=1).to(self.device)  # (B, 16+2)
+
+            # Ensemble prediction
+            ensemble_out = self.model(X_input)
+
+            # Output shape: ensemble_out[:-1] = list of (mu, log_std), each of shape (B, 2)
+            y_pred_safety_list = []
+            y_pred_deadlock_list = []
+            for i in range(gamma.shape[0]):
+                safety_ensemble, deadlock_ensemble = [], []
                 for (mu, log_std) in ensemble_out[:-1]:
                     sigma_sq = torch.square(torch.exp(log_std))
-                    y_deadlock_ensembles.append([mu[0,0].item(), sigma_sq[0,0].item()])
-                    y_safety_ensembles.append([mu[0,1].item(), sigma_sq[0,1].item()])
-                divergence = ensemble_out[-1][0,0].item()
-                div_list.append(divergence)
+                    deadlock_ensemble.append([mu[i,0].item(), sigma_sq[i,0].item()])
+                    safety_ensemble.append([mu[i,1].item(), sigma_sq[i,1].item()])
+                y_pred_deadlock_list.append(deadlock_ensemble)
+                y_pred_safety_list.append(safety_ensemble)
 
-                y_pred_safety_list.append(y_safety_ensembles)
-                y_pred_deadlock_list.append(y_deadlock_ensembles)
+            # Divergence
+            div = ensemble_out[-1][:, 0]  # shape: (B,)
+            div_list = div.tolist()
 
         return y_pred_safety_list, y_pred_deadlock_list, div_list
 
     def create_gmm(self, predictions, num_components=3):
         num_components = self.n_ensemble
-        means = []
-        variances = []
+        mu_list, var_list = [], []
+
         for i in range(num_components):
-            try:
-                mu, sigma_sq = predictions[i]  
-            except:
-                mu, sigma_sq = predictions[0][i]  
-                
-            means.append(mu)  
-            variances.append(sigma_sq) 
+            mu, sigma_sq = predictions[i] if i < len(predictions) else predictions[0][i]
+            mu_list.append(float(mu))
+            var_list.append(float(sigma_sq))
 
-        # means = np.array(means).reshape(-1, 1)  
-        # variances = np.array(variances).reshape(-1, 1, 1)
-        means = np.array([m.cpu().numpy() if torch.is_tensor(m) else m for m in means]).reshape(-1, 1)
-        variances = np.array([v.cpu().numpy() if torch.is_tensor(v) else v for v in variances]).reshape(-1, 1, 1)
+        means_arr = np.array(mu_list, dtype=np.float64).reshape(-1, 1)           # (E,1)
+        covs_arr  = np.array(var_list, dtype=np.float64).reshape(-1, 1, 1)       # (E,1,1)
 
-        gmm = GaussianMixture(n_components=num_components)
-        gmm.means_ = means
-        gmm.covariances_ = variances
-        gmm.weights_ = np.ones(num_components) / num_components  
-
-        try:
-            gmm.precisions_cholesky_ = np.array([np.linalg.cholesky(np.linalg.inv(cov)) for cov in gmm.covariances_])
-        except np.linalg.LinAlgError:
+        class _SimpleGMM:
             pass
-    
+        gmm = _SimpleGMM()               # lightweight placeholder
+        gmm.means_        = means_arr
+        gmm.covariances_  = covs_arr     # diag cov
         return gmm
     
     def train(self, train_loader, epoch):
