@@ -8,6 +8,8 @@ import copy
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import torch_geometric
+from scipy.stats import norm
 from torch_geometric.data import Batch
 from sklearn.preprocessing import MinMaxScaler
 from safe_control.utils import plotting, env
@@ -26,6 +28,7 @@ class OnlineCBFAdapter:
         Initialize the adaptive CBF parameter selector
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # self.device = 'cpu'
         print(f"Using device {self.device} for OnlineCBFAdapter")
         self.robot_model = robot_model
         if self.robot_model == 'Quad2D': #TODO: make state dic
@@ -78,11 +81,12 @@ class OnlineCBFAdapter:
         # Calculate distance, velocity, and relative angle with the obstacle
         if self.robot_model == 'VTOL2D':
             distance = np.linalg.norm(robot_pos - near_obs[:2]) - robot_radius - near_obs[2]
-            distance = np.linalg.norm(robot_pos - near_obs[:2]) - 0.45 + robot_radius + near_obs[2] # correct the distance for mistake in the training data
+            #distance = np.linalg.norm(robot_pos - near_obs[:2]) - 0.45 + robot_radius + near_obs[2] # correct the distance for mistake in the training data
             # abuse variable name: it's just pitch angle in this scenario (since all obs are fixed)
             delta_theta = robot_theta 
         else:
-            distance = np.linalg.norm(robot_pos - near_obs[:2]) - 0.45 + robot_radius + near_obs[2]
+            distance = np.linalg.norm(robot_pos - near_obs[:2]) - robot_radius - near_obs[2]
+            #distance = np.linalg.norm(robot_pos - near_obs[:2]) - 0.45 + robot_radius + near_obs[2]
             delta_theta = np.arctan2(near_obs[1] - robot_pos[1], near_obs[0] - robot_pos[0]) - robot_theta
             delta_theta = ((delta_theta + np.pi) % (2 * np.pi)) - np.pi  
         gamma0 = tracking_controller.pos_controller.cbf_param['alpha1']
@@ -101,25 +105,26 @@ class OnlineCBFAdapter:
             return [distance, velocity, delta_theta, gamma0, gamma1]
 
     def predict_with_penn(self, current_state, gamma0_range, gamma1_range):
-        '''
-        Predict safety loss, deadlock time, and epistemic uncertainty using the Probabilistic Ensemble Neural Network
-        '''
-        batch_input = []
-        for gamma0 in gamma0_range:
-            for gamma1 in gamma1_range:
-                state = current_state.copy()
-                state[3+self.extra_state] = gamma0
-                state[4+self.extra_state] = gamma1
-                batch_input.append(state)
-        
-        batch_input = np.array(batch_input)
-        y_pred_safety_loss, y_pred_deadlock_time, epistemic_uncertainty = self.penn.predict(batch_input)
-        predictions = []
+        """
+        Predict safety loss, deadlock time, and epistemic uncertainty using PENN (MLP-based)
+        """
+        g0_grid, g1_grid = np.meshgrid(gamma0_range, gamma1_range, indexing='ij')
+        gamma_flat = np.stack([g0_grid.flatten(), g1_grid.flatten()], axis=1)  # (N, 2)
+        num_samples = gamma_flat.shape[0]
 
-        for i, (gamma0, gamma1) in enumerate(zip(gamma0_range.repeat(len(gamma1_range)), np.tile(gamma1_range, len(gamma0_range)))):
-            predictions.append((gamma0, gamma1, y_pred_safety_loss[i], y_pred_deadlock_time[i][0], epistemic_uncertainty[i]))
-            # print(f"Predictions: {gamma0:.2f}, {gamma1:.2f} | Safety Loss: {y_pred_safety_loss[i]} | Deadlock Time: {y_pred_deadlock_time[i][0]} | Epistemic: {epistemic_uncertainty[i]}")
-        return predictions
+        state_repeated = np.tile(current_state, (num_samples, 1))  # (N, D)
+        state_repeated[:, 3 + self.extra_state] = gamma_flat[:, 0]
+        state_repeated[:, 4 + self.extra_state] = gamma_flat[:, 1]
+
+        # Predict using vectorized PENN
+        y_pred_safety_loss, y_pred_deadlock_time, epistemic_uncertainty = self.penn.predict(state_repeated)
+
+        # Repackage predictions
+        predictions = [
+            (gamma_flat[i, 0], gamma_flat[i, 1], y_pred_safety_loss[i], y_pred_deadlock_time[i][0], epistemic_uncertainty[i])
+            for i in range(num_samples)
+        ]
+        return predictions    
     
     def build_graph_from_env(self, tracking_controller):
         """
@@ -166,26 +171,26 @@ class OnlineCBFAdapter:
         using the Probabilistic Ensemble Neural Network
         """
         base_graph = self.build_graph_from_env(tracking_controller)
-        graph_list = []
-        for g0 in gamma0_range:
-            for g1 in gamma1_range:
-                # Make a copy of the base graph and attach gamma
-                g_copy = copy.deepcopy(base_graph).to(self.device)
-                g_copy.gamma = torch.tensor([[g0, g1]], dtype=torch.float32, device=self.device)
-                graph_list.append(g_copy)
 
-        y_pred_safety_list, y_pred_deadlock_list, div_list = self.penn.predict(graph_list)
+        # Generate all gamma combinations
+        g0_grid, g1_grid = torch.meshgrid(
+            torch.tensor(gamma0_range, dtype=torch.float32),
+            torch.tensor(gamma1_range, dtype=torch.float32),
+            indexing='ij'
+        )
+        gamma_comb = torch.stack([g0_grid.flatten(), g1_grid.flatten()], dim=1).to(self.device)  # (N, 2)
+        num_samples = gamma_comb.shape[0]
 
+        graph_list = [base_graph.clone() for _ in range(num_samples)]
+        for i in range(num_samples):
+            graph_list[i].gamma = gamma_comb[i].unsqueeze(0)  # Shape (1, 2)
+        batched_graph = Batch.from_data_list(graph_list).to(self.device)
+
+        # Predict with vectorized PENN
+        y_pred_safety_list, y_pred_deadlock_list, div_list = self.penn.predict([batched_graph])
         predictions = []
-        idx = 0
-        for g0 in gamma0_range:
-            for g1 in gamma1_range:
-                safety_ensembles  = y_pred_safety_list[idx]   # List of [mu, var] per ensemble
-                deadlock_ensembles = y_pred_deadlock_list[idx]
-                epistemic_val     = div_list[idx]
-                predictions.append((g0, g1, safety_ensembles, deadlock_ensembles, epistemic_val))
-                # print(f"Predictions: {g0:.2f}, {g1:.2f} | Safety Loss: {safety_ensembles} | Deadlock Time: {deadlock_ensembles} | Epistemic: {epistemic_val}")
-                idx += 1
+        for i, (g0, g1) in enumerate(gamma_comb.cpu().numpy()):
+            predictions.append((g0, g1, y_pred_safety_list[i], y_pred_deadlock_list[i], div_list[i]))
 
         return predictions
 
@@ -194,15 +199,16 @@ class OnlineCBFAdapter:
         Filter predictions based on epistemic uncertainty
         We employ Jensen-Renyi Divergence (JRD) with quadratic Renyi entropy, which has a closed-form expression of the divergence of a GMM
         If the JRD D(X) of the prediction of a given input X is greater than the predefined threshold, it is deemed to be out-of-distribution
-        '''
-        epistemic_uncertainties = [pred[4] for pred in predictions]
-        if all(pred > 5.0 for pred in epistemic_uncertainties):
-            filtered_predictions = []  # If all uncertainties are high, return an empty list
-        else:
-            scaler = MinMaxScaler()
-            normalized_epistemic_uncertainties = scaler.fit_transform(np.array(epistemic_uncertainties).reshape(-1, 1)).flatten()
-            filtered_predictions = [pred for pred, norm_uncert in zip(predictions, normalized_epistemic_uncertainties) if norm_uncert <= self.epistemic_threshold]
-        return filtered_predictions
+        '''        
+        if not predictions:
+            return []
+        epi = np.asarray([p[4] for p in predictions], dtype=np.float32)          # (N,)
+        # If all uncertainties are high, return an empty list
+        if np.all(epi > 5.0):
+            return []
+        epi_norm = (epi - epi.min()) / (epi.max() - epi.min() + 1e-8)
+        keep_mask = epi_norm <= self.epistemic_threshold                         # (N,) bool
+        return [pred for pred, keep in zip(predictions, keep_mask) if keep]
 
     def calculate_cvar_boundary(self):
         '''
@@ -219,18 +225,23 @@ class OnlineCBFAdapter:
         Filter predictions (GMM distribution due to ensemble predictions) based on aleatoric uncertainty 
         using the distributionally robust Conditional Value at Risk (CVaR) boundary
         '''
-        final_predictions = []
-        cvar_boundary = self.calculate_cvar_boundary()
-        for pred in filtered_predictions:
-            _, _, y_pred_safety_loss, _, _ = pred
-            # print(y_pred_safety_loss)
-            gmm = self.penn.create_gmm(y_pred_safety_loss)
-            cvar_filter = DistributionallyRobustCVaR(gmm)
+        if not filtered_predictions:
+            return []
 
-            if cvar_filter.is_within_boundary(cvar_boundary, alpha=0.99):
-                final_predictions.append(pred)
-        # print(final_predictions)
-        return final_predictions
+        # y_pred_safety_loss[i] == list_of_ensembles  => [ [mu, var], ... ]
+        N, E = len(filtered_predictions), self.penn.n_ensemble
+        mu_mat   = np.zeros((N, E), dtype=np.float64)
+        sig2_mat = np.zeros((N, E), dtype=np.float64)
+
+        for i, pred in enumerate(filtered_predictions):
+            ens = pred[2]  # y_pred_safety_loss  => list[[mu,var],...]
+            mu_mat[i]   = [e[0] for e in ens]
+            sig2_mat[i] = [e[1] for e in ens]
+
+        boundary  = self.calculate_cvar_boundary()
+        keep_mask = DistributionallyRobustCVaR.batch_within_boundary(mu_mat, sig2_mat, boundary, alpha=0.99)
+
+        return [pred for pred, keep in zip(filtered_predictions, keep_mask) if keep]
 
     def select_best_parameters(self, final_predictions, tracking_controller):
         '''
@@ -293,6 +304,7 @@ class OnlineCBFAdapter:
                   f" | Filtered {len(filtered_predictions)-len(final_predictions)} with Aleatoric")
 
         return best_gamma0, best_gamma1
+
 
 
 def get_robot_spec_and_obs(robot_model):
@@ -447,7 +459,10 @@ def single_agent_simulation(velocity,
 
     # Main simulation loop
     n_steps = int(max_sim_time / dt)
+    import time
     for _ in range(n_steps):
+        
+        
         ret = tracking_controller.control_step()
         tracking_controller.draw_plot()
 
@@ -462,10 +477,13 @@ def single_agent_simulation(velocity,
 
         # Adapt the CBF parameters if using an online approach
         if online_cbf_adapter is not None:
+            start = time.time()
             best_gamma0, best_gamma1 = online_cbf_adapter.cbf_param_adaptation(tracking_controller)
             if best_gamma0 is not None and best_gamma1 is not None:
                 tracking_controller.pos_controller.cbf_param['alpha1'] = best_gamma0
                 tracking_controller.pos_controller.cbf_param['alpha2'] = best_gamma1
+            end = time.time()
+            print(f"Time taken for pure adaptation step: {end - start:.4f} seconds")
 
         # get states of the robot
         robot_state = tracking_controller.robot.X[:,0].flatten()
