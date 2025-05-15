@@ -20,16 +20,33 @@ from penn.nn_gat_iccbf_predict import ProbabilisticEnsembleGAT
 
 
 # Name or model and saving path
-DATANAME = 'gat_datagen_100000_DynamicUnicycle2D_mpc_cbf'
-MODELNAME_SAVE = 'gat_datagen_DynamicUnicycle2D_0424_gat_norm'
-SCALERNAME_SAVE = 'gat_datagen_DynamicUnicycle2D_0424_test_scaler'
+DATANAME = 'gat_datagen_100000_KinematicBicycle2D_C3BF_mpc_cbf'
+MODELNAME_SAVE = 'KinematicBicycle2D_C3BF_0514_gat_1339'
+SCALERNAME_SAVE = 'KinematicBicycle2D_C3BF_0514_gat_1339'
 data_file = 'data/' + DATANAME + '.csv'
 pickle_file = 'data/' + DATANAME + '.pkl'
 scaler_path = 'checkpoint/' + SCALERNAME_SAVE + '.save'
 model_path = 'checkpoint/' + MODELNAME_SAVE + '.pth'
 
-robot_model_list = ['DynamicUnicycle2D', 'KinematicBicycle2D', 'Quad2D', 'VTOL2D']
-robot_model = robot_model_list[0]
+robot_model_list = ['DynamicUnicycle2D', 'KinematicBicycle2D_C3BF', 'Quad2D', 'VTOL2D']
+robot_model = robot_model_list[1]
+
+ACTIVATION = 'relu'
+LR = 0.0001
+BATCHSIZE = 32
+EPOCH = 500
+
+TEST_ONLY = False       # False => Train then test  |   True => Just inference
+USE_GAT_EMBED = False   # False => MLP-only PENN    |   True => GAT+PENN
+
+WANDB_FLAG = True
+if WANDB_FLAG:
+    import wandb
+    wandb.init(project="KinematicBicycle2D_C3BF_0514", config={
+        "learning_rate": LR,
+        "epochs": EPOCH,
+        "batch_size": BATCHSIZE
+    })
 
 # PENN Parameters
 if robot_model == 'Quad2D':
@@ -42,22 +59,6 @@ n_ensemble = 3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Using device: {device}")
 
-ACTIVATION = 'relu'
-LR = 0.0001
-BATCHSIZE = 32
-EPOCH = 1000
-
-TEST_ONLY = False      # If True, just do inference; if False, train then test
-USE_GAT_EMBED = True   # False => MLP-only PENN, True => GAT+PENN
-
-WANDB_FLAG = True
-if WANDB_FLAG:
-    import wandb
-    wandb.init(project="penn_train_0422_test", config={
-        "learning_rate": LR,
-        "epochs": EPOCH,
-        "batch_size": BATCHSIZE
-    })
 
 def load_and_preprocess_data(data_file, scaler_path=None, noise_percentage=0.0, robot_model=None):
     dataset = pd.read_csv(data_file)

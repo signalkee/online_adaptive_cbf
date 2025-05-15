@@ -17,14 +17,8 @@ class ProbabilisticEnsembleGAT(nn.Module):
         self.n_output = n_output
         
         self.gat_model = gat_model  
-        # self.gat_model.eval()       
         self.gat_model = self.gat_model.to(self.device)
-        # self.projector = nn.Sequential(
-        #     nn.LayerNorm(16),
-        #     nn.Linear(16, 16),
-        #     nn.ReLU()
-        # ).to(self.device)
-        
+
         try:
             from penn.penn import EnsembleStochasticLinear
         except:
@@ -43,12 +37,7 @@ class ProbabilisticEnsembleGAT(nn.Module):
             self.model = nn.DataParallel(self.model)
             torch.backends.cudnn.benchmark = True
 
-        # self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.optimizer = torch.optim.Adam(list(self.model.parameters()) + list(self.gat_model.parameters()), lr=lr)
-        # self.optimizer = torch.optim.Adam(
-        #     list(self.model.parameters()) + list(self.gat_model.parameters()) + list(self.projector.parameters()),
-        #     lr=lr
-        # )
         self.criterion = self.gaussian_nll_loss  # Custom Gaussian NLL Loss
         self.mse_loss = nn.MSELoss()
         self.best_test_err = 10000.0
@@ -134,7 +123,6 @@ class ProbabilisticEnsembleGAT(nn.Module):
             # Train each ensemble member
             for model_idx in range(self.n_ensemble):
                 robot_emb = self.gat_model.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
-                # robot_emb = self.projector(robot_emb)
                 X_input = torch.cat([robot_emb, gamma], dim=1).to(self.device)
                 y_target = y.to(self.device)
                 
@@ -168,7 +156,6 @@ class ProbabilisticEnsembleGAT(nn.Module):
                 y = y.squeeze(1) if y.dim() == 3 else y
 
                 robot_emb = self.gat_model.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
-                # robot_emb = self.projector(robot_emb)
                 gamma = getattr(batch_data, 'gamma', None)
                 gamma = gamma.view(-1, 2).to(self.device)
                 
