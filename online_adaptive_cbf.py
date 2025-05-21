@@ -33,8 +33,13 @@ class OnlineCBFAdapter:
         self.robot_model = robot_model
         if self.robot_model == 'Quad2D': #TODO: make state dic
             self.extra_state = 1
+            self.gamma_dim = 2
+        elif self.robot_model == 'KinematicBicycle2D_C3BF':
+            self.extra_state = 0
+            self.gamma_dim = 1
         else:
             self.extra_state = 0
+            self.gamma_dim = 2
 
         self.use_gat = use_gat
         if self.use_gat:
@@ -45,7 +50,7 @@ class OnlineCBFAdapter:
         self.gat_module = None
         if self.use_gat:
             self.gat_module = GATModule().to(self.device)
-            self.penn = ProbabilisticEnsembleGAT(self.gat_module, device=self.device)
+            self.penn = ProbabilisticEnsembleGAT(self.gat_module, device=self.device, gamma_dim=self.gamma_dim)
         else:
             self.penn = ProbabilisticEnsembleNN(n_states=self.n_states, device=self.device)
             if scaler_name:
@@ -204,7 +209,7 @@ class OnlineCBFAdapter:
             return []
         epi = np.asarray([p[4] for p in predictions], dtype=np.float32)          # (N,)
         # If all uncertainties are high, return an empty list
-        if np.all(epi > 5.0):
+        if np.all(epi > 10.0):
             return []
         epi_norm = (epi - epi.min()) / (epi.max() - epi.min() + 1e-8)
         keep_mask = epi_norm <= self.epistemic_threshold                         # (N,) bool
@@ -462,7 +467,6 @@ def single_agent_simulation(velocity,
     import time
     for _ in range(n_steps):
         
-        
         ret = tracking_controller.control_step()
         tracking_controller.draw_plot()
 
@@ -513,14 +517,14 @@ if __name__ == "__main__":
     ]
     robot_model_list = [
         "DynamicUnicycle2D",
-        "KinematicBicycle2D",
+        "KinematicBicycle2D_C3BF",
         "Quad2D",
         "VTOL2D"
     ]
 
     # Pick a specific controller and robot model
     controller_name = controller_list[-1]   
-    robot_model = robot_model_list[0]       
+    robot_model = robot_model_list[2]       
     
     # Define waypoints for the simulation
     if robot_model == "VTOL2D":

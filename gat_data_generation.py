@@ -35,9 +35,9 @@ ROBOT_SPECS = {
             "gamma1_range":    (0.01, 0.35)
         }
     },
-    "KinematicBicycle2D": {
+    "KinematicBicycle2D_C3BF": {
         "spec": {
-            "model": "KinematicBicycle2D",
+            "model": "KinematicBicycle2D_C3BF",
             "a_max": 0.5,
             "fov_angle": 170.0,
             "cam_range": 0.01,
@@ -45,8 +45,8 @@ ROBOT_SPECS = {
         },
         "param_ranges": {
             "theta_range":     (-np.pi/2,  np.pi/2),
-            "gamma0_range":    (0.01, 1.0),
-            "gamma1_range":    (0.01, 1.0)
+            "gamma0_range":    (0.01, 0.35),
+            "gamma1_range":    (0.01, 0.35)
         }
     },
     "Quad2D": {
@@ -81,9 +81,6 @@ def get_safety_loss_from_controller(tracking_controller, safety_metric):
     """
     def angle_normalize(x):
         return (((x + np.pi) % (2 * np.pi)) - np.pi)
-
-    gamma0 = tracking_controller.pos_controller.cbf_param['alpha1']
-    gamma1 = tracking_controller.pos_controller.cbf_param['alpha2']
     
     robot_state = tracking_controller.robot.X
     robot_rad = tracking_controller.robot.robot_radius
@@ -92,8 +89,14 @@ def get_safety_loss_from_controller(tracking_controller, safety_metric):
     delta_theta = angle_normalize(relative_angle)
     
     # Compute the Control Barrier Function (CBF) values
-    h_k, d_h, dd_h = tracking_controller.robot.agent_barrier_dt(robot_state, np.array([0, 0]), obs_state)
-    cbf_constraint_value = dd_h + (gamma0 + gamma1) * d_h + gamma0 * gamma1 * h_k
+    gamma0 = tracking_controller.pos_controller.cbf_param['alpha1']
+    if tracking_controller.robot_spec['model'] in ['KinematicBicycle2D_C3BF']:
+        h_k, d_h = tracking_controller.robot.agent_barrier_dt(robot_state, np.array([0, 0]), obs_state)
+        cbf_constraint_value = d_h + gamma0 * h_k
+    else:
+        gamma1 = tracking_controller.pos_controller.cbf_param['alpha2']
+        h_k, d_h, dd_h = tracking_controller.robot.agent_barrier_dt(robot_state, np.array([0, 0]), obs_state)
+        cbf_constraint_value = dd_h + (gamma0 + gamma1) * d_h + gamma0 * gamma1 * h_k
     
     # Compute the safety loss
     safety_loss = safety_metric.compute_safety_loss_function(
@@ -108,7 +111,7 @@ def get_safety_loss_from_controller(tracking_controller, safety_metric):
 
 def single_agent_simulation_gat(
         robot_model, controller_name,
-        gamma0, gamma1, theta,
+        gamma0, gamma1=None, theta=0.01,
         num_obstacles=5,
         max_sim_time=20.0,
         deadlock_threshold=0.2,
@@ -118,6 +121,9 @@ def single_agent_simulation_gat(
     Run a single agent simulation with multiple random obstacles to evaluate
     maximum safety loss and deadlock time, returning the constructed graph (PyG graph).
     """
+    if robot_model != "KinematicBicycle2D_C3BF" and gamma1 is None:
+        raise ValueError("Selected model needs gamma1.")
+        
     # 1) Time step
     dt = 0.05
 
@@ -162,7 +168,7 @@ def single_agent_simulation_gat(
             ex, ey, er = existing
             center_dist = np.hypot(ox - ex, oy - ey)
             min_clearance = er + radius + min_gap
-            if center_dist < min_clearance*1.2:
+            if center_dist < min_clearance*1.75: # 1.75 for KinematicBicycle2D_C3BF, 1.2 for others
                 valid = False
                 break
         if valid:
@@ -184,7 +190,7 @@ def single_agent_simulation_gat(
 
     tracking_controller = LocalTrackingController(
         x_init, robot_spec,
-        control_type=controller_name,
+        controller_type={'pos': controller_name},
         dt=dt,
         show_animation=show_animation,
         save_animation=False,
@@ -198,8 +204,9 @@ def single_agent_simulation_gat(
 
     # Set the gamma parameters for CBF
     tracking_controller.pos_controller.cbf_param['alpha1'] = gamma0
-    tracking_controller.pos_controller.cbf_param['alpha2'] = gamma1
-
+    if robot_model != "KinematicBicycle2D_C3BF":
+        tracking_controller.pos_controller.cbf_param['alpha2'] = gamma1
+        
     # 5) Simulate
     safety_metric = SafetyLossFunction()
     sim_time = 0.0
@@ -274,8 +281,8 @@ def single_agent_simulation_gat(
 
     goal_state = [8.0, 2.0]
     graph_data = module.create_graph(robot=robot_state, obstacles=obstacles, goal=goal_state, deadlock=deadlock_time, risk=max_safety_loss)
-    graph_data.gamma = [[gamma0, gamma1]]
-    
+    graph_data.gamma = [[gamma0]] if gamma1 is None else [[gamma0, gamma1]]
+        
     return {
         "graph_data": graph_data,
     }
@@ -322,7 +329,10 @@ def generate_data_for_model_gat(
     parameter_space = []
     for _ in range(num_samples):
         gamma0 = np.random.uniform(g0_min, g0_max)
-        gamma1 = np.random.uniform(g1_min, g1_max)
+        if robot_model == "KinematicBicycle2D_C3BF":
+            gamma1 = None               
+        else:
+            gamma1 = np.random.uniform(g1_min, g1_max)        
         theta = np.random.uniform(th_min, th_max)
         n_obs  = np.random.randint(obstacles_range[0], obstacles_range[1] + 1)
         parameter_space.append((robot_model, controller_name, gamma0, gamma1, theta, n_obs))
@@ -377,11 +387,11 @@ if __name__ == "__main__":
         ]
     robot_model_list = [
         "DynamicUnicycle2D", 
-        "KinematicBicycle2D", 
+        "KinematicBicycle2D_C3BF", 
         "Quad2D"
         ]
     controller_name = controller_list[1]
-    robot_model = robot_model_list[2]
+    robot_model = robot_model_list[1]
     
     TESTMODE = False
     
@@ -395,10 +405,10 @@ if __name__ == "__main__":
         generate_data_for_model_gat(
             robot_model=robot_model,
             controller_name=controller_name,
-            num_samples=100000,       
+            num_samples=50000,       
             num_processes=25,        # Change based on the number of cores available
             obstacles_range=(2, 10),
-            output_prefix="gat_datagen"
+            output_prefix="gat_datagen_1_75"
         )
         print("Data generation complete!")
 

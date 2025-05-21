@@ -9,12 +9,13 @@ from sklearn.mixture import GaussianMixture
 
 
 class ProbabilisticEnsembleGAT(nn.Module):
-    def __init__(self, gat_model, n_output=2, n_hidden=40, n_ensemble=3, device='cpu', lr=0.001, activation='relu'):
+    def __init__(self, gat_model, n_output=2, n_hidden=40, n_ensemble=3, gamma_dim=2, device='cpu', lr=0.001, activation='relu'):
         super(ProbabilisticEnsembleGAT, self).__init__()
         self.device = device
         self.n_ensemble = n_ensemble
         self.n_hidden = n_hidden
         self.n_output = n_output
+        self.gamma_dim = gamma_dim
         
         self.gat_model = gat_model  
         self.gat_model = self.gat_model.to(self.device)
@@ -23,7 +24,7 @@ class ProbabilisticEnsembleGAT(nn.Module):
             from penn.penn import EnsembleStochasticLinear
         except:
             from nn_model.penn.penn import EnsembleStochasticLinear
-        self.model = EnsembleStochasticLinear(in_features=18,  # 16D embedding + 2D gamma
+        self.model = EnsembleStochasticLinear(in_features=16 + self.gamma_dim,  # 16D embedding + gamma dimension
                                                 out_features=self.n_output,
                                                 hidden_features=self.n_hidden,
                                                 ensemble_size=self.n_ensemble, 
@@ -53,7 +54,7 @@ class ProbabilisticEnsembleGAT(nn.Module):
             edge_index = batch_data.edge_index.to(self.device)
             edge_attr = batch_data.edge_attr.to(self.device)
             batch_idx = batch_data.batch.to(self.device)
-            gamma = getattr(batch_data, 'gamma', None).view(-1, 2).to(self.device)
+            gamma = getattr(batch_data, 'gamma', None).view(-1, self.gamma_dim).to(self.device)
             robot_emb = self.gat_model.gat.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
             
             # robot_emb: (1, emb_dim) → concat with gamma
@@ -116,9 +117,8 @@ class ProbabilisticEnsembleGAT(nn.Module):
             y          = batch_data.y.to(self.device)                
             y = y.squeeze(1) if y.dim() == 3 else y  # Ensure shape [batch_size, 2]
 
-            # Obtain gamma 2D
-            gamma = getattr(batch_data, 'gamma', None)
-            gamma = gamma.view(-1, 2).to(self.device)
+            # Obtain gamma
+            gamma = getattr(batch_data, 'gamma', None).view(-1, self.gamma_dim).to(self.device)
 
             # Train each ensemble member
             for model_idx in range(self.n_ensemble):
@@ -156,9 +156,8 @@ class ProbabilisticEnsembleGAT(nn.Module):
                 y = y.squeeze(1) if y.dim() == 3 else y
 
                 robot_emb = self.gat_model.extract_robot_embedding(x, edge_index, edge_attr, batch_idx)
-                gamma = getattr(batch_data, 'gamma', None)
-                gamma = gamma.view(-1, 2).to(self.device)
-                
+                gamma = getattr(batch_data, 'gamma', None).view(-1, self.gamma_dim).to(self.device)
+
                 X_input = torch.cat([robot_emb, gamma], dim=1).to(self.device)
                 y_target = y.to(self.device)
 

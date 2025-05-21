@@ -20,9 +20,9 @@ from penn.nn_gat_iccbf_predict import ProbabilisticEnsembleGAT
 
 
 # Name or model and saving path
-DATANAME = 'gat_datagen_100000_KinematicBicycle2D_C3BF_mpc_cbf'
-MODELNAME_SAVE = 'KinematicBicycle2D_C3BF_0514_gat_1339'
-SCALERNAME_SAVE = 'KinematicBicycle2D_C3BF_0514_gat_1339'
+DATANAME = 'gat_datagen_1_75_50000_KinematicBicycle2D_C3BF_mpc_cbf'
+MODELNAME_SAVE = 'KinematicBicycle2D_C3BF_0515_gat_1339'
+SCALERNAME_SAVE = 'KinematicBicycle2D_C3BF_0515_gat_1339'
 data_file = 'data/' + DATANAME + '.csv'
 pickle_file = 'data/' + DATANAME + '.pkl'
 scaler_path = 'checkpoint/' + SCALERNAME_SAVE + '.save'
@@ -37,12 +37,12 @@ BATCHSIZE = 32
 EPOCH = 500
 
 TEST_ONLY = False       # False => Train then test  |   True => Just inference
-USE_GAT_EMBED = False   # False => MLP-only PENN    |   True => GAT+PENN
+USE_GAT_EMBED = True   # False => MLP-only PENN    |   True => GAT+PENN
 
 WANDB_FLAG = True
 if WANDB_FLAG:
     import wandb
-    wandb.init(project="KinematicBicycle2D_C3BF_0514", config={
+    wandb.init(project="KinematicBicycle2D_C3BF_0515", config={
         "learning_rate": LR,
         "epochs": EPOCH,
         "batch_size": BATCHSIZE
@@ -51,8 +51,14 @@ if WANDB_FLAG:
 # PENN Parameters
 if robot_model == 'Quad2D':
     n_states = 7  
+    gamma_dim = 2
+elif robot_model == 'KinematicBicycle2D_C3BF': # one gamma
+    n_states = 5
+    gamma_dim = 1
 else:
     n_states = 6  
+    gamma_dim = 2
+    
 n_output = 2
 n_hidden = 40
 n_ensemble = 3
@@ -67,6 +73,9 @@ def load_and_preprocess_data(data_file, scaler_path=None, noise_percentage=0.0, 
     if robot_model == 'Quad2D':
         X = dataset[['Distance', 'VelocityX', 'VelocityZ', 'Theta', 'gamma0', 'gamma1']].values
         extra_states = 1
+    elif robot_model == 'KinematicBicycle2D_C3BF':          
+        X = dataset[['Distance', 'Velocity', 'Theta', 'gamma0']].values
+        extra_states = 0        
     else:
         X = dataset[['Distance', 'Velocity', 'Theta', 'gamma0', 'gamma1']].values
         extra_states = 0
@@ -171,8 +180,14 @@ if __name__ == '__main__':
             penn.load_scaler(scaler_path)
             penn.load_model(model_path)
 
-            # Example input array [distance, velocity, theta, gamma1, gamma2]
-            input_data = [2.55, 0.01, 0.001, 0.005, 0.005]
+            # Example input array 
+            if robot_model == 'KinematicBicycle2D_C3BF': # [distance, velocity, theta, gamma0]
+                input_data = [2.55, 0.01, 0.001, 0.005]
+            elif robot_model == 'Quad2D': # [distance, velocityX, velocityZ, theta, gamma1, gamma2]
+                input_data = [2.55, 0.01, 0.02, 0.001, 0.005, 0.005]
+            else:  # [distance, velocity, theta, gamma1, gamma2]
+                input_data = [2.55, 0.01, 0.001, 0.005, 0.005]            
+
             y_pred_safety_loss, y_pred_deadlock_time, div = penn.predict(input_data)
             print("Predicted Safety Loss:", y_pred_safety_loss)
             print("Predicted Deadlock Time:", y_pred_deadlock_time)
@@ -222,7 +237,7 @@ if __name__ == '__main__':
         graph_list = load_graph_dataset(pickle_file)
         gat_module = GATModule(device=device).to(device)
         gat_network = gat_module.gat
-        penn_gat = ProbabilisticEnsembleGAT(gat_network, n_output, n_hidden, n_ensemble, 
+        penn_gat = ProbabilisticEnsembleGAT(gat_network, n_output, n_hidden, n_ensemble, gamma_dim,
                                             device, LR, ACTIVATION).to(device)
 
         n_tot = len(graph_list)
