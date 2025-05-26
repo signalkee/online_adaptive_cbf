@@ -54,9 +54,10 @@ class ProbabilisticEnsembleNN(nn.Module):
             ensemble_outputs = self.model(input_tensor)  # list of (mu, log_std) per ensemble + div
 
         # Ensemble outputs: list of (mu[B,2], log_std[B,2])
-        mu_stack     = torch.stack([e[0] for e in ensemble_outputs[:-1]], dim=0)  # (E, B, 2)
-        logstd_stack = torch.stack([e[1] for e in ensemble_outputs[:-1]], dim=0)  # (E, B, 2)
-        sigma_sq     = torch.square(torch.exp(logstd_stack))  # (E, B, 2)
+        mu_list, logstd_list = zip(*ensemble_outputs[:-1])
+        mu_stack     = torch.stack(mu_list,     dim=0)   # (E,B,2)
+        logstd_stack = torch.stack(logstd_list, dim=0)   # (E,B,2)
+        sigma_sq     = torch.exp(logstd_stack).pow(2)
 
         # Transpose to shape (B, E, 2)
         mu_np = mu_stack.permute(1, 0, 2).cpu().numpy()       # (B, E, 2)
