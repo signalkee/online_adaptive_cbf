@@ -2,63 +2,69 @@ import time
 import os
 import numpy as np
 import pandas as pd
-import torch
-from module import module  
 import random
 import math
-import matplotlib.pyplot as plt
 import joblib
-from sklearn.preprocessing import StandardScaler
-
-from torch.utils.data import DataLoader
-from penn.nn_iccbf_predict import ProbabilisticEnsembleNN  
-
 import pickle
+from module import module  
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+import torch
+from torch.utils.data import DataLoader
 from torch_geometric.loader import DataLoader as GeoDataLoader
 from torch_geometric.data import Batch
 from torch_geometric.data import Data
 from penn.gat import GATModule
+from penn.nn_iccbf_predict import ProbabilisticEnsembleNN  
 from penn.nn_gat_iccbf_predict import ProbabilisticEnsembleGAT  
 
 
 # Name or model and saving path
-DATANAME = 'gat_datagen_10000_DynamicUnicycle2D_mpc_cbf'
-MODELNAME_SAVE = 'penn_model_0409_test'
+DATANAME = 'gat_datagen_1_75_50000_KinematicBicycle2D_C3BF_mpc_cbf'
+MODELNAME_SAVE = 'KinematicBicycle2D_C3BF_0515_gat_1339'
+SCALERNAME_SAVE = 'KinematicBicycle2D_C3BF_0515_gat_1339'
 data_file = 'data/' + DATANAME + '.csv'
 pickle_file = 'data/' + DATANAME + '.pkl'
-scaler_path = 'checkpoint/scaler_0409_test.save'
+scaler_path = 'checkpoint/' + SCALERNAME_SAVE + '.save'
 model_path = 'checkpoint/' + MODELNAME_SAVE + '.pth'
 
-robot_model_list = ['DynamicUnicycle2D', 'KinematicBicycle2D', 'Quad2D', 'VTOL2D']
-robot_model = robot_model_list[0]
+robot_model_list = ['DynamicUnicycle2D', 'KinematicBicycle2D_C3BF', 'Quad2D', 'VTOL2D']
+robot_model = robot_model_list[1]
+
+ACTIVATION = 'relu'
+LR = 0.0001
+BATCHSIZE = 32
+EPOCH = 500
+
+TEST_ONLY = False       # False => Train then test  |   True => Just inference
+USE_GAT_EMBED = True   # False => MLP-only PENN    |   True => GAT+PENN
+
+WANDB_FLAG = True
+if WANDB_FLAG:
+    import wandb
+    wandb.init(project="KinematicBicycle2D_C3BF_0515", config={
+        "learning_rate": LR,
+        "epochs": EPOCH,
+        "batch_size": BATCHSIZE
+    })
 
 # PENN Parameters
 if robot_model == 'Quad2D':
     n_states = 7  
+    gamma_dim = 2
+elif robot_model == 'KinematicBicycle2D_C3BF': # one gamma
+    n_states = 5
+    gamma_dim = 1
 else:
     n_states = 6  
+    gamma_dim = 2
+    
 n_output = 2
 n_hidden = 40
 n_ensemble = 3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Using device: {device}")
 
-ACTIVATION = 'relu'
-LR = 0.0001
-BATCHSIZE = 32
-EPOCH = 10000
-
-TEST_ONLY = False      # If True, just do inference; if False, train then test
-USE_GAT_EMBED = True   # False => MLP-only PENN, True => GAT+PENN
-
-WANDB_FLAG = True
-if WANDB_FLAG:
-    import wandb
-    wandb.init(project="penn_compare_0409_10000", config={
-        "learning_rate": LR,
-        "epochs": EPOCH,
-        "batch_size": BATCHSIZE
-    })
 
 def load_and_preprocess_data(data_file, scaler_path=None, noise_percentage=0.0, robot_model=None):
     dataset = pd.read_csv(data_file)
@@ -67,6 +73,9 @@ def load_and_preprocess_data(data_file, scaler_path=None, noise_percentage=0.0, 
     if robot_model == 'Quad2D':
         X = dataset[['Distance', 'VelocityX', 'VelocityZ', 'Theta', 'gamma0', 'gamma1']].values
         extra_states = 1
+    elif robot_model == 'KinematicBicycle2D_C3BF':          
+        X = dataset[['Distance', 'Velocity', 'Theta', 'gamma0']].values
+        extra_states = 0        
     else:
         X = dataset[['Distance', 'Velocity', 'Theta', 'gamma0', 'gamma1']].values
         extra_states = 0
@@ -171,8 +180,14 @@ if __name__ == '__main__':
             penn.load_scaler(scaler_path)
             penn.load_model(model_path)
 
-            # Example input array [distance, velocity, theta, gamma1, gamma2]
-            input_data = [2.55, 0.01, 0.001, 0.005, 0.005]
+            # Example input array 
+            if robot_model == 'KinematicBicycle2D_C3BF': # [distance, velocity, theta, gamma0]
+                input_data = [2.55, 0.01, 0.001, 0.005]
+            elif robot_model == 'Quad2D': # [distance, velocityX, velocityZ, theta, gamma1, gamma2]
+                input_data = [2.55, 0.01, 0.02, 0.001, 0.005, 0.005]
+            else:  # [distance, velocity, theta, gamma1, gamma2]
+                input_data = [2.55, 0.01, 0.001, 0.005, 0.005]            
+
             y_pred_safety_loss, y_pred_deadlock_time, div = penn.predict(input_data)
             print("Predicted Safety Loss:", y_pred_safety_loss)
             print("Predicted Deadlock Time:", y_pred_deadlock_time)
@@ -222,7 +237,7 @@ if __name__ == '__main__':
         graph_list = load_graph_dataset(pickle_file)
         gat_module = GATModule(device=device).to(device)
         gat_network = gat_module.gat
-        penn_gat = ProbabilisticEnsembleGAT(gat_network, n_output, n_hidden, n_ensemble, 
+        penn_gat = ProbabilisticEnsembleGAT(gat_network, n_output, n_hidden, n_ensemble, gamma_dim,
                                             device, LR, ACTIVATION).to(device)
 
         n_tot = len(graph_list)

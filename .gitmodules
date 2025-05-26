@@ -1,6 +1,6 @@
 [submodule "safe_control"]
 	path = safe_control
 	url = https://github.com/tkkim-robot/safe_control.git
-[submodule "DistributionallyRobustCVaR"]
-	path = DistributionallyRobustCVaR
-	url = https://github.com/signalkee/DistributionallyRobustCVaR.git
+[submodule "cvar_gmm_filter"]
+	path = cvar_gmm_filter
+	url = https://github.com/signalkee/cvar_gmm_filter.git
