@@ -151,7 +151,7 @@ You can observe that the predicted risk level becomes higher as the CBF paramete
 ### Distributionally Robust CVaR
 
 <p align="left">
-  <img src="https://github.com/user-attachments/assets/b6da3010-dcac-47a9-ad63-34a03df8e29a" height="200px">
+  <img src="https://github.com/user-attachments/assets/a55809d8-a027-4dfc-a215-eb92fe592d4f" height="200px">
 </p>
 
 Please refer to our repository [`cvar-gmm-filter`](https://github.com/signalkee/cvar-gmm-filter/tree/7405e05f7455f320b2c7b0ae72cef31a82d4a4f8) for more details.
@@ -171,6 +171,17 @@ Please refer to our repository [`cvar-gmm-filter`](https://github.com/signalkee/
 
 If you find this repository useful, please consider citing our paper:
 
+```
+@inproceedings{kim2025learning, 
+    author    = {Kim, Taekyung and Kee, Robin Inho and Panagou, Dimitra},
+    title     = {Learning to Refine Input Constrained Control Barrier Functions via Uncertainty-Aware Online Parameter Adaptation}, 
+    booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+    shorttitle = {Online-Adaptive-CBF},
+    year      = {2025}
+}
+```
+
+Our paper with more theoretical analysis:
 ```
 @inproceedings{kim2025learning, 
     author    = {Kim, Taekyung and Kee, Robin Inho and Panagou, Dimitra},
